@@ -3,12 +3,6 @@ import numpy as np
 from collections import defaultdict
 import math
 
-# load up all of the 19997 documents in the corpus
-
-training = "s3://chrisjermainebucket/comp330_A5/TrainingDataOneLinePerDoc.txt"
-
-small_test = "s3://chrisjermainebucket/comp330_A5/TestingDataOneLinePerDoc.txt"
-
 allDictWords = None
 
 topWords = None
@@ -45,9 +39,11 @@ def get_doc_rdd(filename):
 	return keyAndText, keyAndText.count()
 
 
+# def lab5(filename):
 def lab5():
-	global allDictWords, topWords, allDictWordsSet
+	global allDictWords, topWords
 	regex = re.compile('[^a-zA-Z]')
+	# keyAndText = get_key_and_text(filename)
 
 	keyAndListOfWords = keyAndText.map(lambda x : (str(x[0]), regex.sub(' ', x[1]).lower().split()))
 	allWords = keyAndListOfWords.flatMap(lambda x: ((j, 1) for j in x[1]))
@@ -55,8 +51,7 @@ def lab5():
 	topWords = allCounts.top (20000, lambda x : (x[1],x[0]))
 	twentyK = sc.parallelize(range(20000))
 	dictionary = twentyK.map (lambda num: (topWords[num][0] , num))
-	allDictWords = dictionary.map(lambda x: x[0])
-	dictionary.top(10)
+	# allDictWords = dictionary.map(lambda x: x[0])
 	return dictionary
 
 def consNumpyArray(listPositions, sizeArray):
@@ -86,21 +81,21 @@ def get_doc_np_arr(keyAndText):
 
 	return docNumpyWordCounts
 
-def cons_feature_vectors(filename):
+def cons_feature_vectors(keyAndText):
 	"""
 	
-	:param filename: 
+	:param keyAndText: 
 	:return: 
 	A numpy array representing the feature vectors of the data. 
 	"""
-	# load up all of the 19997 documents in the corpus
-	corpus = sc.textFile(filename)
 
-	doc_np_arr = get_doc_rdd()
+	doc_np_arr = get_doc_rdd(keyAndText)
 	# TODO: convert this to a numpy array the same way we do with cons_label
+
 	return
 
-def get_key_and_text():
+def get_key_and_text(filename):
+	corpus = sc.textFile(filename)
 
 	# each entry in validLines will be a line from the text file
 	validLines = corpus.filter(lambda x: 'id' in x)
@@ -108,19 +103,21 @@ def get_key_and_text():
 	# now we transform it into a bunch of (docID, text) pairs
 	keyAndText = validLines.map(lambda x: (
 		x[x.index('id="') + 4: x.index('" url=')], x[x.index('">') + 2:]))
+	keyAndText.cache()
+	return keyAndText
 
-
-def cons_label_vector(dict):
+def cons_label_vector(docNameRDD):
 	"""
-	:param dict - an RDD of the form [(doc name, ---),...]
+	:param docNameRDD - an RDD of the form [(doc name, ---),...]
 		constructs our label vector 
 	:return: RDD of -1's and 1's
+	Will be of dimension
 	"""
 	regex = re.compile('AU(.)*')
-	labels = dictionary.map(lambda x: -1 + 2 * regex.match(x[0]))
+	labels = docNameRDD.map(lambda x: -1 + 2 * regex.match(x[0]))
 	np_arr = np.array(labels.collectaslist())
 	# TODO: check what exactly we're returning!
-	return
+	return np_arr
 
 def x_r_calc(x,r):
 	return np.dot(x,r)
@@ -154,19 +151,28 @@ def llh(x,y,r):
 	return tot_sum
 
 def calc_gradient(x,y,r):
-	k = x.shape[0] # TODO: Check all below
+	k = x.shape[1] # TODO: Check all below
 	n = y.size
 	# should be of dimension (n,k)
 	y_tile = np.tile(y,(1,k))
-	y_x = np.multiply(y, x)
+	y_x = np.multiply(y_tile, x)
+	y_x = np.sum(y_x, 0) # (1, k)
 
 	# Now calculate the gradient of the second half :
 	# -log(1+e^{x_i*r})
-	ones = np.full((n,1),1)
-	e_x_r = np.exp(x_r_calc(x,r))
-	inner_term = np.add(ones, e_x_r)
-	quotient = np.divide(-1. * ones, inner_term)
-	chain_product = np.multiply(quotient, np.multiply())
+	ones_k = np.full((k,1),1)
+	ones_n = np.full((n,1),1)
+	e_x_r = np.exp(x_r_calc(x,r)) # (n,1)
+
+	inner_term = np.add(ones_n, e_x_r) # (n,1)
+	quotient = np.divide(-1. * ones_n, inner_term) # (n,1)
+	quotient_tile = np.tile(quotient, (1,k))
+
+	exr_tile = np.tile(e_x_r, (1, k)) # (n,k)
+	r_tile = np.tile(r, (1,n)) # (k,n)
+	chain_product = np.multiply(r_tile,
+								np.transpose(np.multiply(quotient_tile, exr_tile))) # (k,n)
+	summed_partial = np.sum(chain_product, 0)
 
 	# calculate the gradient of the L2 Norm
 	l2_norm_grad = .5 * (2*r)**(-.5)
@@ -183,7 +189,7 @@ def get_mean_vector(x):
 	:return: 
 	"""
 	x_sum = np.sum(x, 0) # sum the rows together
-	n = x.shape[0]
+	n = x.shape[1]
 	x_mean = x_sum / (n * 1.)
 	return x_mean
 
@@ -271,30 +277,24 @@ def task1():
 	print("car")
 	print(dictionary.lookup("car"))
 
-def task2():
+def task2(x,y,r):
 	"""
 	x: Matrix of feature vectors. Dimension (n,k)
-	y: Vector of labels. Dimension (1,n)
-	r: Matrix of regression coefficients. Has dimension (1,k)
+	y: Vector of labels. Dimension (n,1)
+	r: Matrix of regression coefficients. Has dimension (k,1)
 	Note: k = 20000 in this case
 	:return: 
 	"""
-	global r_estimates, y, x
 	THRESH = 10e-6
 	BOLD_DRIVER = 1.
 	INCREASE = 1.05
 	DECREASE = .5
-
 
 	# Convert each of the documents to a TF-IDF vector
 	# Use grad desc to learn a logistic regression model
 	# Use L2 regularization
 	# Maybe play with parameter controlling of regularization
 	x_norm = normalize_data(x)
-
-	r = np.ones(x_norm.shape[0])
-	r = np.append(r,1) # OPTIONAL - add the intercept feature
-	dim_data = r.shape[1] # this is the size of our feature vectors (and # regression coeff)
 
 	# Compute the LLH of your model
 	old_llh = llh(x,y,r)
@@ -315,21 +315,29 @@ def task2():
 
 def task3(test_file_name, r):
 	""""""
-	global small_test
 	# First get all the TF-IDF vectors corresponding to the test data
 	# Normalize them
-	test_x = cons_feature_vectors(small_test)
+	testKeyAndText = get_key_and_text(test_file_name)
+
+	# TODO: might not even have to do the below code.
+		# Only do if you need a way to index in to find a text block
+	# rangeN = sc.parallelize(range(testKeyAndText.count()))
+	# docAndOrder = testKeyAndText.map(lambda x: ()) # [(0, docName), (1, docName), ...]
+
+	test_x = cons_feature_vectors(testKeyAndText)
 	norm_test_x = normalize_data(test_x)
 
-	predicted_y =
+	predicted_y = cons_label_vector(testKeyAndText)
+
 	# Evaluate your model
-	predict(norm_test_x, predicted_y, r)
+	f1, false_pos_indices = predict(norm_test_x, predicted_y, r)
 	# Predict whether each point corresponds to australian cases
 	# Compute the F1 score obtained by the classifier
 
 	# Retrieve the text of three false positives, for your writeup section
-	false_pos_text =
-
+	false_pos_text = []
+	for i in false_pos_indices:
+		false_pos_text.append(testKeyAndText[i]) # TODO: can we do this???
 
 	return F1, false_pos_text
 
@@ -382,20 +390,33 @@ def predict(x, y, r):
 
 	# TODO: possibly return tuple containing F1 score,
 		# and list of three false-positive texts
-	return f1_score,
+	return f1_score,false_positives
 
 ######################
 # HERE WE CONSTRUCT THE FEATURE VECTORS AND THE OUTPUT
 corpus = None
 # allDocs = None
 
-keyAndText, num_docs = get_doc_rdd(training)
-dictionary = lab5()
-lenDictionary = dictionary.count
-x = ()# feature vectors
+training = "s3://chrisjermainebucket/comp330_A5/TrainingDataOneLinePerDoc.txt"
+small_test = "s3://chrisjermainebucket/comp330_A5/TestingDataOneLinePerDoc.txt"
+
+keyAndText = get_key_and_text(training)
+keyAndText.cache()
+num_docs = keyAndText.count()
+dictionary = lab5(training)
+dictionary.cache()
+lenDictionary = dictionary.count()
+
+x = cons_feature_vectors(keyAndText) # feature vectors
 y = cons_label_vector(dictionary) # takes the form 1 for yes, -1 for no
 mean = get_mean_vector(x) # TODO: calculate the mean and variance of the training data
 variance = get_sd_vector(x, mean)
 
+task1()
 
-F1 = task3(small_test)
+k = x.shape[1]
+k += 1  # OPTIONAL FOR LEARNING INTERCEPT TERM
+initial_r = np.full((k, 1), 1)  # (k,1)
+new_r = task2(x,y,r)
+
+F1 = task3(small_test, new_r)
