@@ -16,35 +16,29 @@ sortedWordDocOccurrences = None
 
 def get_doc_rdd(filename):
 	"""
-	
 	:param filename: 
 	:return: 
 	A tuple consisting of the following
 		-An RDD containing [(doc, text ), ...]
-		-The number of documents total in the given file
+		-A map of 
 	"""
 	corpus = sc.textFile(filename)
-
 	# each entry in validLines will be a line from the text file
 	validLines = corpus.filter(lambda x: 'id' in x)
-
 	# now we transform it into a bunch of (docID, text) pairs
-	keyAndText = validLines.map(lambda x: (
-		x[x.index('id="') + 4: x.index('" url=')], x[x.index('">') + 2:]))
-	keyAndText.cache()
-
+	keyAndText = get_key_and_text(filename)
 	# gets list of all documents
-	allDocs = validLines.map(
-		lambda x: x[x.index('id="') + 4: x.index('" url=')]) # TODO: do we use this?
-	return keyAndText, keyAndText.count()
+	# allDocs = validLines.map(
+	# 	lambda x: x[x.index('id="') + 4: x.index('" url=')]) # TODO: do we use this?
+	numWordsInDoc = keyAndText.map(lambda x: (x[0], len(x[1])))
+	return keyAndText, numWordsInDoc
 
 
 # def lab5(filename):
 def lab5():
-	global allDictWords, topWords
+	global allDictWords, topWords, keyAndText
 	regex = re.compile('[^a-zA-Z]')
 	# keyAndText = get_key_and_text(filename)
-
 	keyAndListOfWords = keyAndText.map(lambda x : (str(x[0]), regex.sub(' ', x[1]).lower().split()))
 	allWords = keyAndListOfWords.flatMap(lambda x: ((j, 1) for j in x[1]))
 	allCounts = allWords.reduceByKey (lambda a, b: a + b)
@@ -64,11 +58,10 @@ def consNumpyArray(listPositions, sizeArray):
 
 def get_doc_np_arr(keyAndText):
 	"""
-	
 	:param keyAndText: [(docname, String),...]
 	:return: 
 	"""
-	global corpus, dictionary, num_docs, topWords, allDictWords, lenDictionary
+	global dictionary, num_docs, topWords, lenDictionary
 	regex = re.compile('[^a-zA-Z]')
 	docWordPairList = keyAndText.flatMap(lambda x : ((word ,str(x[0])) for word in regex.sub(' ', x[1]).lower().split()))
 	# (word, (docID, posInDictionary)
@@ -78,28 +71,28 @@ def get_doc_np_arr(keyAndText):
 	docCollectPosRDD = docPosRDD.groupBy(lambda x: x[0])
 	# (doc, [ posInDictionary,...]
 	docNumpyWordCounts = docCollectPosRDD.map(lambda x: (x[0], consNumpyArray(x[1],lenDictionary)))
-
 	return docNumpyWordCounts
 
-def cons_feature_vectors(keyAndText):
+def cons_feature_vectors(filename):
 	"""
 	
 	:param keyAndText: 
 	:return: 
 	A numpy array representing the feature vectors of the data. 
+	This is used to construct the 
 	"""
+	keyAndText, numWordsInDoc = get_doc_rdd(filename)
+	docAndFrequencies = cons_frequency_rdd(keyAndText)
+	tf_idf_rdd = cons_TF_IDF(docAndFrequencies, numWordsInDoc)
+	tf_idf_np_rdd = tf_idf_rdd.map(lambda x: x[1])
+	tf_idf_np = np.array(tf_idf_np_rdd.collect()) # gets us a list of lists
+	return tf_idf_np, keyAndText
 
-	doc_np_arr = get_doc_rdd(keyAndText)
-	# TODO: convert this to a numpy array the same way we do with cons_label
-
-	return
 
 def get_key_and_text(filename):
 	corpus = sc.textFile(filename)
-
 	# each entry in validLines will be a line from the text file
 	validLines = corpus.filter(lambda x: 'id' in x)
-
 	# now we transform it into a bunch of (docID, text) pairs
 	keyAndText = validLines.map(lambda x: (
 		x[x.index('id="') + 4: x.index('" url=')], x[x.index('">') + 2:]))
@@ -114,9 +107,8 @@ def cons_label_vector(docNameRDD):
 	Will be of dimension
 	"""
 	regex = re.compile('AU(.)*')
-	labels = docNameRDD.map(lambda x: -1 + 2 * regex.match(x[0]))
-	np_arr = np.array(labels.collectaslist())
-	# TODO: check what exactly we're returning!
+	labels = docNameRDD.map(lambda x: 1. * bool(regex.match(x[0])))
+	np_arr = np.array(labels.collect())
 	return np_arr
 
 def x_r_calc(x,r):
@@ -147,7 +139,6 @@ def llh(x,y,r):
 	# last part encompasses the L2 Norm
 	l2_norm = np.sqrt(np.sum(np.square(r)))
 	tot_sum += l2_norm
-
 	return tot_sum
 
 def calc_gradient(x,y,r):
@@ -157,10 +148,12 @@ def calc_gradient(x,y,r):
 	y_tile = np.tile(y,(1,k))
 	y_x = np.multiply(y_tile, x)
 	y_x = np.sum(y_x, 0) # (1, k)
+	y_x = np.transpose(y_x)
 
 	# Now calculate the gradient of the second half :
 	# -log(1+e^{x_i*r})
-	ones_k = np.full((k,1),1)
+	# ones_k = np.full((k,1),1)
+
 	ones_n = np.full((n,1),1)
 	e_x_r = np.exp(x_r_calc(x,r)) # (n,1)
 
@@ -172,15 +165,15 @@ def calc_gradient(x,y,r):
 	r_tile = np.tile(r, (1,n)) # (k,n)
 	chain_product = np.multiply(r_tile,
 								np.transpose(np.multiply(quotient_tile, exr_tile))) # (k,n)
-	summed_partial = np.sum(chain_product, 0)
+	summed_partial = np.sum(chain_product, 1)
 
 	# calculate the gradient of the L2 Norm
-	l2_norm_grad = .5 * (2*r)**(-.5)
+	l2_norm_grad = .5 * (2*r)**(-.5) # (k,1)
 
 	# Now we combine together the three vectors
 	combined_partial = y_x + chain_product + l2_norm_grad
 
-	return np.sum(combined_partial,0) # want to sum over all columns
+	return np.sum(combined_partial,0) # (k,1)
 
 def get_mean_vector(x):
 	"""
@@ -236,9 +229,10 @@ def get_k_largest_coeff_indices(k, r):
 	# Got code from
 	# https://stackoverflow.com/questions/6910641/how-do-i-get-indices-of-n-maximum-values-in-a-numpy-array
 	# https://stackoverflow.com/questions/44409084/how-to-zip-two-1d-numpy-array-to-2d-numpy-array
-	indices = np.argpartition(r, -1 * k)[-1*k:]
+	abs_r = np.abs(r)
+	indices = np.argpartition(abs_r, -1 * k)[-1*k:]
 
-	indices_val_zip = np.column_stack(r[indices], indices)
+	indices_val_zip = np.column_stack(abs_r[indices], indices)
 	list_zip = list(indices_val_zip)
 	sorted(list_zip, True)
 
@@ -276,6 +270,48 @@ def task1():
 	print(dictionary.lookup("protein"))
 	print("car")
 	print(dictionary.lookup("car"))
+
+def cons_frequency_rdd(keyAndText):
+	"""
+	Pretty much a clone of my A4 solution.
+	:return: 
+	"""
+	global dictionary, lenDictionary
+	regex = re.compile('[^a-zA-Z]')
+	docWordPairList = keyAndText.flatMap(lambda x : ((word ,str(x[0])) for word in regex.sub(' ', x[1]).lower().split()))
+	# (word, (docID, posInDictionary)
+	wordDocPosRDD = docWordPairList.join(dictionary)
+	docPosRDD = wordDocPosRDD.map(lambda x: x[1])
+	# ((docID, [(docID, posInDictionary),...]))
+	docCollectPosRDD = docPosRDD.groupBy(lambda x: x[0])
+	# (doc, [ posInDictionary,...]
+	docNumpyWordCounts = docCollectPosRDD.map(lambda x: (x[0], consNumpyArray(x[1],lenDictionary)))
+	return docNumpyWordCounts
+
+def cons_TF_IDF(docAndFrequencies, numWordsInDoc):
+	"""
+	Will be called
+	Note, that the only things that change call to call are the rdd's corresponding to
+	the documents and the frequencies of words, and the number of words per each doc. 
+	This is because these things are used to calculate the TF portion of the TFIDF.
+	It is only the TF that changes when we're calculating the TF-IDF for training vs 
+	test docs. 
+	
+	:param docAndFrequencies: 
+	:param numWordsInDoc: 
+	:return: 
+	"""
+	global num_docs, lenDictionary,allWordDocOccurrences, dictionary, sortedWordDocOccurrences, topWords, IDF, titles_of_interest
+	pre_TF_d = docAndFrequencies.join(numWordsInDoc)
+	TF_d = pre_TF_d.map(lambda x: (x[0], x[1][0] / (x[1][1] * 1.) ) )
+	wordDocSingleOccurrences = pre_TF_d.map(lambda x: (1, np.clip(x[1][0], 0,1))) # map all to the same key
+	wordDocAllOccurrencesRDD = wordDocSingleOccurrences.reduceByKey(lambda x,y: x + y).collectAsMap()
+	allWordDocOccurrencesArr = wordDocAllOccurrencesRDD[1]
+	IDF = np.full(lenDictionary, num_docs)
+	IDF = np.divide(IDF, allWordDocOccurrencesArr)
+	IDF = np.log(IDF)
+	TF_IDF = TF_d.map(lambda x: (x[0], x[1] * IDF))
+	return TF_IDF
 
 def task2(x,y,r):
 	"""
@@ -315,16 +351,13 @@ def task2(x,y,r):
 
 def task3(test_file_name, r):
 	""""""
-	# First get all the TF-IDF vectors corresponding to the test data
-	# Normalize them
-	testKeyAndText = get_key_and_text(test_file_name)
 
 	# TODO: might not even have to do the below code.
 		# Only do if you need a way to index in to find a text block
 	# rangeN = sc.parallelize(range(testKeyAndText.count()))
 	# docAndOrder = testKeyAndText.map(lambda x: ()) # [(0, docName), (1, docName), ...]
 
-	test_x = cons_feature_vectors(testKeyAndText)
+	test_x = cons_feature_vectors(test_file_name)
 	norm_test_x = normalize_data(test_x)
 
 	predicted_y = cons_label_vector(testKeyAndText)
@@ -403,12 +436,12 @@ small_test = "s3://chrisjermainebucket/comp330_A5/TestingDataOneLinePerDoc.txt"
 keyAndText = get_key_and_text(training)
 keyAndText.cache()
 num_docs = keyAndText.count()
-dictionary = lab5(training)
+dictionary = lab5()
 dictionary.cache()
 lenDictionary = dictionary.count()
 
-x = cons_feature_vectors(keyAndText) # feature vectors
-y = cons_label_vector(dictionary) # takes the form 1 for yes, -1 for no
+x, keyAndText = cons_feature_vectors(training) # feature vectors
+y = cons_label_vector(keyAndText) # takes the form 1 for yes, 0 for no
 mean = get_mean_vector(x) # TODO: calculate the mean and variance of the training data
 variance = get_sd_vector(x, mean)
 
