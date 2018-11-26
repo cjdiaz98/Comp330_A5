@@ -402,6 +402,8 @@ def task3(test_file_name, r):
 
 def predict(x, y, r):
 	"""
+	Note: we can do this with bulk matrix operations, but then we wouldn't 
+	be able to tell what types of positive and negatives tests we got. 
 	
 	:param x: 
 	:param y: 
@@ -468,7 +470,7 @@ dictionary = lab5()
 # dictionary.cache()
 lenDictionary = dictionary.count()
 
-x, keyAndText = cons_feature_vectors(small_training) # feature vectors
+x, keyAndText = cons_training_feature_vectors(small_training) # feature vectors
 # x, keyAndText = cons_feature_vectors(training) # feature vectors
 y = cons_label_vector(keyAndText) # takes the form 1 for yes, 0 for no
 # mean = get_mean_vector(x) # TODO: calculate the mean and variance of the training data
