@@ -15,6 +15,8 @@ sortedWordDocOccurrences = None
 
 IDF = None
 
+PENALTY = .01
+
 def get_doc_rdd(filename):
 	"""
 	:param filename: 
@@ -143,6 +145,7 @@ def llh(x,y,r):
 	:param r: 
 	:return: 
 	"""
+	global PENALTY
 	n = y.size
 	# this first part encompasses the log(1) and the product y*x*r
 	x_r = x_r_calc(x,r)
@@ -156,7 +159,7 @@ def llh(x,y,r):
 	tot_sum -= log_term.sum()
 	# Note: we're using regularaization, so we add the L2 Norm to our Loss Function (LLH)
 	# last part encompasses the L2 Norm
-	l2_norm = np.sqrt(np.sum(np.square(r)))
+	l2_norm = PENALTY * np.sqrt(np.sum(np.square(r)))
 	tot_sum += l2_norm
 	return tot_sum
 
@@ -193,7 +196,7 @@ def calc_gradient(x,y,r):
 	# calculate the gradient of the L2 Norm
 	ones_k = np.full((k,1),1)
 	sqrt_r = np.sqrt(np.abs(2*r))
-	l2_norm_grad = .5 * np.divide(ones_k, sqrt_r) # (k,1)
+	l2_norm_grad = PENALTY * .5 * np.divide(ones_k, sqrt_r) # (k,1)
 	# Now we combine together the three vectors
 	combined_partial = y_x + summed_partial + l2_norm_grad
 	return combined_partial# (k,1)
