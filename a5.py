@@ -123,21 +123,21 @@ def llh(x,y,r):
 	:param r: 
 	:return: 
 	"""
-	n = y.size
-	# this first part encompasses the log(1) and the product y*x*r
-	x_r = x_r_calc(x,r)
-	y_x_r = np.multiply(y,x_r)
-	tot_sum = n * math.log(1) + np.sum(y_x_r)
-	# second part encompasses term
-	# -log(1+e^{x_i*r})
-	inner_exp = np.exp(x_r)
-	inner_exp += np.full(n, 1) # TODO!
-	log_term = np.log(inner_exp)
-	tot_sum -= log_term.sum()
-	# Note: we're using regularaization, so we add the L2 Norm to our Loss Function (LLH)
-	# last part encompasses the L2 Norm
-	l2_norm = np.sqrt(np.sum(np.square(r)))
-	tot_sum += l2_norm
+n = y.size
+# this first part encompasses the log(1) and the product y*x*r
+x_r = x_r_calc(x,r)
+y_x_r = np.multiply(y,x_r)
+tot_sum = np.sum(y_x_r)
+# second part encompasses term
+# -log(1+e^{x_i*r})
+inner_exp = np.exp(x_r)
+inner_exp += np.full((n,1), 1) # TODO!
+log_term = np.log(inner_exp)
+tot_sum -= log_term.sum()
+# Note: we're using regularaization, so we add the L2 Norm to our Loss Function (LLH)
+# last part encompasses the L2 Norm
+l2_norm = np.sqrt(np.sum(np.square(r)))
+tot_sum += l2_norm
 	return tot_sum
 
 def calc_gradient(x,y,r):
@@ -150,36 +150,33 @@ def calc_gradient(x,y,r):
 	:param r: 
 	:return: 
 	"""
-k = x.shape[1] # TODO: Check all below
-n = y.size
-# should be of dimension (n,k)
-y_tile = np.transpose(np.tile(y,(1,k)))
-y_tile = np.tile(y,(1,k))
-y_x = np.multiply(y_tile, x)
-#todo: check if we need below
-y_x = np.sum(y_x, 0) # (1, k)
-y_x = np.transpose(y_x) # (k,1)
-
-# Now calculate the gradient of the second half :
-# -log(1+e^{x_i*r})
-# ones_n = np.full(n,1)
-ones_n = np.full((n,1),1)
-e_x_r = np.exp(x_r_calc(x,r)) # (n,1)
-inner_term = np.add(ones_n, e_x_r) # (n,1)
-quotient = np.divide(-1. * ones_n, inner_term) # (n,1)
-quotient_tile = np.tile(quotient, (1,k)) # (n,k)
-exr_tile = np.tile(e_x_r, (1, k)) # (n,k)
-r_tile = np.tile(r, (1,n)) # (k,n)
-chain_product = np.multiply(r_tile,np.transpose(np.multiply(quotient_tile, exr_tile))) # (k,n)
-summed_partial = np.sum(chain_product, 1)
-# calculate the gradient of the L2 Norm
-ones_k = np.full((k,1),1)
-sqrt_r = np.sqrt(2*r)
-
-l2_norm_grad = .5 * np.divide(ones_k, sqrt_r) # (k,1)
-# Now we combine together the three vectors
-combined_partial = y_x + summed_partial + l2_norm_grad
-return combined_partial# (k,1)
+	k = x.shape[1] # TODO: Check all below
+	n = y.size
+	# should be of dimension (n,k)
+	y_tile = np.tile(y,(1,k))
+	y_x = np.multiply(y_tile, x)
+	#todo: check if we need below
+	y_x = np.sum(y_x, 0) # (1, k)
+	y_x = np.transpose(y_x) # (k,1)
+	# Now calculate the gradient of the second half :
+	# -log(1+e^{x_i*r})
+	# ones_n = np.full(n,1)
+	ones_n = np.full((n,1),1)
+	e_x_r = np.exp(x_r_calc(x,r)) # (n,1)
+	inner_term = np.add(ones_n, e_x_r) # (n,1)
+	quotient = np.divide(-1. * ones_n, inner_term) # (n,1)
+	quotient_tile = np.tile(quotient, (1,k)) # (n,k)
+	exr_tile = np.tile(e_x_r, (1, k)) # (n,k)
+	r_tile = np.tile(r, (1,n)) # (k,n)
+	chain_product = np.multiply(r_tile,np.transpose(np.multiply(quotient_tile, exr_tile))) # (k,n)
+	summed_partial = np.sum(chain_product, 1)
+	# calculate the gradient of the L2 Norm
+	ones_k = np.full((k,1),1)
+	sqrt_r = np.sqrt(np.abs(2*r))
+	l2_norm_grad = .5 * np.divide(ones_k, sqrt_r) # (k,1)
+	# Now we combine together the three vectors
+	combined_partial = y_x + summed_partial + l2_norm_grad
+	return combined_partial# (k,1)
 
 def get_mean_vector(x):
 	"""
@@ -333,30 +330,26 @@ def task2(x,y,r):
 	BOLD_DRIVER = 1.
 	INCREASE = 1.05
 	DECREASE = .5
-
 	# Convert each of the documents to a TF-IDF vector
 	# Use grad desc to learn a logistic regression model
 	# Use L2 regularization
 	# Maybe play with parameter controlling of regularization
 	x_norm = normalize_data(x)
-
 	# Compute the LLH of your model
 	old_llh = llh(x_norm,y,r)
 	new_llh = 0
-
 	while abs(old_llh - new_llh) > THRESH:
-		grad = calc_gradient(x,y,r)
+		grad = calc_gradient(x_norm,y,r)
 		# Run until delta-LLH is very small
 		r = r + BOLD_DRIVER * grad
-		new_llh = llh(x,y,r)
-
-		if old_llh < new_llh:
+		new_llh = llh(x_norm,y,r)
+		if old_llh > new_llh:
 			BOLD_DRIVER *= DECREASE
+			# we want to de-incentivize decreases
 		else:
 			BOLD_DRIVER *= INCREASE
-
 		old_llh = new_llh
-	return old_llh
+	return r
 
 def task3(test_file_name, r):
 	""""""
