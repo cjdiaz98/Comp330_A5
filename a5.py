@@ -13,6 +13,7 @@ sortedWordDocOccurrences = None
 # Below is another list of LLH functions
 # https://spark.apache.org/docs/latest/mllib-linear-methods.html
 
+IDF = None
 
 def get_doc_rdd(filename):
 	"""
@@ -34,7 +35,6 @@ def get_doc_rdd(filename):
 	return keyAndText, numWordsInDoc
 
 
-# def lab5(filename):
 def lab5():
 	global allDictWords, topWords, keyAndText
 	regex = re.compile('[^a-zA-Z]')
@@ -74,7 +74,8 @@ def get_doc_np_arr(keyAndText):
 	docNumpyWordCounts = docCollectPosRDD.map(lambda x: (x[0], consNumpyArray(x[1],lenDictionary)))
 	return docNumpyWordCounts
 
-def cons_feature_vectors(filename):
+
+def cons_training_feature_vectors(filename):
 	"""
 	
 	:param keyAndText: 
@@ -82,12 +83,32 @@ def cons_feature_vectors(filename):
 	A numpy array representing the feature vectors of the data. 
 	This is used to construct the 
 	"""
+	global IDF
 	keyAndText, numWordsInDoc = get_doc_rdd(filename)
 	docAndFrequencies = cons_frequency_rdd(keyAndText)
-	tf_idf_rdd = cons_TF_IDF(docAndFrequencies, numWordsInDoc)
+	IDF = cons_IDF_mat(docAndFrequencies)
+	tf_idf_rdd = cons_TF_IDF(docAndFrequencies, numWordsInDoc, IDF)
 	# tf_idf_np_rdd = tf_idf_rdd.map(lambda x: x[1])
 	tf_idf_np_rdd = tf_idf_rdd.map(lambda x: np.append(x[1],1)) # TODO: this is if we want to add an intercept!
 	tf_idf_np = np.array(tf_idf_np_rdd.collect()) # gets us a list of lists
+	return tf_idf_np, keyAndText
+
+
+def cons_test_feature_vectors(filename):
+	"""
+
+	:param keyAndText: 
+	:return: 
+	A numpy array representing the feature vectors of the data. 
+	This is used to construct the 
+	"""
+	global IDF
+	keyAndText, numWordsInDoc = get_doc_rdd(filename)
+	docAndFrequencies = cons_frequency_rdd(keyAndText)
+	tf_idf_rdd = cons_TF_IDF(docAndFrequencies, numWordsInDoc, IDF)
+	# tf_idf_np_rdd = tf_idf_rdd.map(lambda x: x[1])
+	tf_idf_np_rdd = tf_idf_rdd.map(lambda x: np.append(x[1],1))  # TODO: this is if we want to add an intercept!
+	tf_idf_np = np.array(tf_idf_np_rdd.collect())  # gets us a list of lists
 	return tf_idf_np, keyAndText
 
 def get_key_and_text(filename):
@@ -123,21 +144,21 @@ def llh(x,y,r):
 	:param r: 
 	:return: 
 	"""
-n = y.size
-# this first part encompasses the log(1) and the product y*x*r
-x_r = x_r_calc(x,r)
-y_x_r = np.multiply(y,x_r)
-tot_sum = np.sum(y_x_r)
-# second part encompasses term
-# -log(1+e^{x_i*r})
-inner_exp = np.exp(x_r)
-inner_exp += np.full((n,1), 1) # TODO!
-log_term = np.log(inner_exp)
-tot_sum -= log_term.sum()
-# Note: we're using regularaization, so we add the L2 Norm to our Loss Function (LLH)
-# last part encompasses the L2 Norm
-l2_norm = np.sqrt(np.sum(np.square(r)))
-tot_sum += l2_norm
+	n = y.size
+	# this first part encompasses the log(1) and the product y*x*r
+	x_r = x_r_calc(x,r)
+	y_x_r = np.multiply(y,x_r)
+	tot_sum = np.sum(y_x_r)
+	# second part encompasses term
+	# -log(1+e^{x_i*r})
+	inner_exp = np.exp(x_r)
+	inner_exp += np.full((n,1), 1) # TODO!
+	log_term = np.log(inner_exp)
+	tot_sum -= log_term.sum()
+	# Note: we're using regularaization, so we add the L2 Norm to our Loss Function (LLH)
+	# last part encompasses the L2 Norm
+	l2_norm = np.sqrt(np.sum(np.square(r)))
+	tot_sum += l2_norm
 	return tot_sum
 
 def calc_gradient(x,y,r):
@@ -150,7 +171,7 @@ def calc_gradient(x,y,r):
 	:param r: 
 	:return: 
 	"""
-	k = x.shape[1] # TODO: Check all below
+	k = x.shape[1]
 	n = y.size
 	# should be of dimension (n,k)
 	y_tile = np.tile(y,(1,k))
@@ -167,8 +188,8 @@ def calc_gradient(x,y,r):
 	quotient = np.divide(-1. * ones_n, inner_term) # (n,1)
 	quotient_tile = np.tile(quotient, (1,k)) # (n,k)
 	exr_tile = np.tile(e_x_r, (1, k)) # (n,k)
-	r_tile = np.tile(r, (1,n)) # (k,n)
-	chain_product = np.multiply(r_tile,np.transpose(np.multiply(quotient_tile, exr_tile))) # (k,n)
+	# r_tile = np.tile(r, (1,n)) # (k,n) # todo: do we even have to use this? probably not!
+	chain_product = np.multiply(np.transpose(x),np.transpose(np.multiply(quotient_tile, exr_tile))) # (k,n)
 	summed_partial = np.sum(chain_product, 1)
 	# calculate the gradient of the L2 Norm
 	ones_k = np.full((k,1),1)
@@ -293,7 +314,18 @@ def cons_frequency_rdd(keyAndText):
 	docNumpyWordCounts = docCollectPosRDD.map(lambda x: (x[0], consNumpyArray(x[1],lenDictionary)))
 	return docNumpyWordCounts
 
-def cons_TF_IDF(docAndFrequencies, numWordsInDoc):
+def cons_IDF_mat(docAndFrequencies):
+	wordDocSingleOccurrences = docAndFrequencies.map(
+		lambda x: (1, np.clip(x[1][0], 0, 1)))  # map all to the same key
+	wordDocAllOccurrencesRDD = wordDocSingleOccurrences.reduceByKey(
+		lambda x, y: x + y).collectAsMap()
+	allWordDocOccurrencesArr = wordDocAllOccurrencesRDD[1]
+	IDF = np.full(lenDictionary, num_docs)
+	IDF = np.divide(IDF, allWordDocOccurrencesArr)
+	IDF = np.log(IDF)
+	return IDF
+
+def cons_TF_IDF(docAndFrequencies, numWordsInDoc, IDF):
 	"""
 	Will be called
 	Note, that the only things that change call to call are the rdd's corresponding to
@@ -309,12 +341,6 @@ def cons_TF_IDF(docAndFrequencies, numWordsInDoc):
 	global num_docs, lenDictionary,allWordDocOccurrences, dictionary, sortedWordDocOccurrences, topWords, IDF, titles_of_interest
 	pre_TF_d = docAndFrequencies.join(numWordsInDoc)
 	TF_d = pre_TF_d.map(lambda x: (x[0], x[1][0] / (x[1][1] * 1.) ) )
-	wordDocSingleOccurrences = pre_TF_d.map(lambda x: (1, np.clip(x[1][0], 0,1))) # map all to the same key
-	wordDocAllOccurrencesRDD = wordDocSingleOccurrences.reduceByKey(lambda x,y: x + y).collectAsMap()
-	allWordDocOccurrencesArr = wordDocAllOccurrencesRDD[1]
-	IDF = np.full(lenDictionary, num_docs)
-	IDF = np.divide(IDF, allWordDocOccurrencesArr)
-	IDF = np.log(IDF)
 	TF_IDF = TF_d.map(lambda x: (x[0], x[1] * IDF))
 	return TF_IDF
 
@@ -359,10 +385,10 @@ def task3(test_file_name, r):
 	# rangeN = sc.parallelize(range(testKeyAndText.count()))
 	# docAndOrder = testKeyAndText.map(lambda x: ()) # [(0, docName), (1, docName), ...]
 
-	test_x = cons_feature_vectors(test_file_name)
-	norm_test_x = normalize_data(test_x)
+test_x, testKeyAndText = cons_feature_vectors(test_file_name)
+norm_test_x = normalize_data(test_x)
 
-	predicted_y = cons_label_vector(testKeyAndText)
+	actual_y = cons_label_vector(testKeyAndText)
 
 	# Evaluate your model
 	f1, false_pos_indices = predict(norm_test_x, predicted_y, r)
@@ -438,22 +464,26 @@ small_training = "s3://chrisjermainebucket/comp330_A5/SmallTrainingDataOneLinePe
 
 # keyAndText = get_key_and_text(training)
 keyAndText = get_key_and_text(small_training)
-keyAndText.cache()
+# keyAndText.cache()
 num_docs = keyAndText.count()
 dictionary = lab5()
-dictionary.cache()
+# dictionary.cache()
 lenDictionary = dictionary.count()
 
-x, keyAndText = cons_feature_vectors(training) # feature vectors
+x, keyAndText = cons_feature_vectors(small_training) # feature vectors
+# x, keyAndText = cons_feature_vectors(training) # feature vectors
 y = cons_label_vector(keyAndText) # takes the form 1 for yes, 0 for no
-mean = get_mean_vector(x) # TODO: calculate the mean and variance of the training data
-variance = get_sd_vector(x, mean)
+# mean = get_mean_vector(x) # TODO: calculate the mean and variance of the training data
+# variance = get_sd_vector(x, mean)
 
 task1()
 
 k = x.shape[1]
 # initial_r = np.full(k, .1)  # (k,1)
 initial_r = np.asmatrix(np.full((k, 1), .1)) # (k,1)
-new_r = task2(x,y,r)
+new_r = task2(x,y,initial_r)
+
+testKeyAndText = get_key_and_text(small_test)
+testKeyAndText, testNumWordsInDoc = get_doc_rdd(small_test) # have this for testing purposes
 
 F1 = task3(small_test, new_r)
