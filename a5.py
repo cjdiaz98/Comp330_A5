@@ -48,6 +48,7 @@ def lab5():
 	# allDictWords = dictionary.map(lambda x: x[0])
 	return dictionary
 
+
 def consNumpyArray(listPositions, sizeArray):
 	#listPositions is a list of (doc, rank), with rank between
 	# 1 and sizeArray --> we have to subtract 1 to indx
@@ -84,10 +85,10 @@ def cons_feature_vectors(filename):
 	keyAndText, numWordsInDoc = get_doc_rdd(filename)
 	docAndFrequencies = cons_frequency_rdd(keyAndText)
 	tf_idf_rdd = cons_TF_IDF(docAndFrequencies, numWordsInDoc)
-	tf_idf_np_rdd = tf_idf_rdd.map(lambda x: x[1])
+	# tf_idf_np_rdd = tf_idf_rdd.map(lambda x: x[1])
+	tf_idf_np_rdd = tf_idf_rdd.map(lambda x: np.append(x[1],1)) # TODO: this is if we want to add an intercept!
 	tf_idf_np = np.array(tf_idf_np_rdd.collect()) # gets us a list of lists
 	return tf_idf_np, keyAndText
-
 
 def get_key_and_text(filename):
 	corpus = sc.textFile(filename)
@@ -109,7 +110,7 @@ def cons_label_vector(docNameRDD):
 	regex = re.compile('AU(.)*')
 	labels = docNameRDD.map(lambda x: 1. * bool(regex.match(x[0])))
 	np_arr = np.array(labels.collect())
-	return np_arr
+	return np.transpose(np.asmatrix(np_arr))
 
 def x_r_calc(x,r):
 	return np.dot(x,r)
@@ -127,14 +128,12 @@ def llh(x,y,r):
 	x_r = x_r_calc(x,r)
 	y_x_r = np.multiply(y,x_r)
 	tot_sum = n * math.log(1) + np.sum(y_x_r)
-
 	# second part encompasses term
 	# -log(1+e^{x_i*r})
 	inner_exp = np.exp(x_r)
-	inner_exp += np.full((n,1), 1) # TODO!
+	inner_exp += np.full(n, 1) # TODO!
 	log_term = np.log(inner_exp)
 	tot_sum -= log_term.sum()
-
 	# Note: we're using regularaization, so we add the L2 Norm to our Loss Function (LLH)
 	# last part encompasses the L2 Norm
 	l2_norm = np.sqrt(np.sum(np.square(r)))
@@ -142,38 +141,45 @@ def llh(x,y,r):
 	return tot_sum
 
 def calc_gradient(x,y,r):
-	k = x.shape[1] # TODO: Check all below
-	n = y.size
-	# should be of dimension (n,k)
-	y_tile = np.tile(y,(1,k))
-	y_x = np.multiply(y_tile, x)
-	y_x = np.sum(y_x, 0) # (1, k)
-	y_x = np.transpose(y_x)
+	"""
+	Note: 
+	k = # of features
+	n = sample size
+	:param x: 
+	:param y: 
+	:param r: 
+	:return: 
+	"""
+k = x.shape[1] # TODO: Check all below
+n = y.size
+# should be of dimension (n,k)
+y_tile = np.transpose(np.tile(y,(1,k)))
+y_tile = np.tile(y,(1,k))
+y_x = np.multiply(y_tile, x)
+#todo: check if we need below
+y_x = np.sum(y_x, 0) # (1, k)
+y_x = np.transpose(y_x) # (k,1)
 
-	# Now calculate the gradient of the second half :
-	# -log(1+e^{x_i*r})
-	# ones_k = np.full((k,1),1)
+# Now calculate the gradient of the second half :
+# -log(1+e^{x_i*r})
+# ones_n = np.full(n,1)
+ones_n = np.full((n,1),1)
+e_x_r = np.exp(x_r_calc(x,r)) # (n,1)
+inner_term = np.add(ones_n, e_x_r) # (n,1)
+quotient = np.divide(-1. * ones_n, inner_term) # (n,1)
+quotient_tile = np.tile(quotient, (1,k)) # (n,k)
+exr_tile = np.tile(e_x_r, (1, k)) # (n,k)
+r_tile = np.tile(r, (1,n)) # (k,n)
+chain_product = np.multiply(r_tile,np.transpose(np.multiply(quotient_tile, exr_tile))) # (k,n)
+summed_partial = np.sum(chain_product, 1)
+# calculate the gradient of the L2 Norm
+ones_k = np.full((k,1),1)
+sqrt_r = np.sqrt(2*r)
 
-	ones_n = np.full((n,1),1)
-	e_x_r = np.exp(x_r_calc(x,r)) # (n,1)
-
-	inner_term = np.add(ones_n, e_x_r) # (n,1)
-	quotient = np.divide(-1. * ones_n, inner_term) # (n,1)
-	quotient_tile = np.tile(quotient, (1,k))
-
-	exr_tile = np.tile(e_x_r, (1, k)) # (n,k)
-	r_tile = np.tile(r, (1,n)) # (k,n)
-	chain_product = np.multiply(r_tile,
-								np.transpose(np.multiply(quotient_tile, exr_tile))) # (k,n)
-	summed_partial = np.sum(chain_product, 1)
-
-	# calculate the gradient of the L2 Norm
-	l2_norm_grad = .5 * (2*r)**(-.5) # (k,1)
-
-	# Now we combine together the three vectors
-	combined_partial = y_x + chain_product + l2_norm_grad
-
-	return np.sum(combined_partial,0) # (k,1)
+l2_norm_grad = .5 * np.divide(ones_k, sqrt_r) # (k,1)
+# Now we combine together the three vectors
+combined_partial = y_x + summed_partial + l2_norm_grad
+return combined_partial# (k,1)
 
 def get_mean_vector(x):
 	"""
@@ -212,6 +218,8 @@ def normalize_data(x):
 	"""
 	mean_vector = get_mean_vector(x)
 	sd_vector = get_sd_vector(x,mean_vector)
+	sd_vector[sd_vector == 0] = 1
+	# todo: needed this ^ because for some reason, I got SD's of 0
 	n = x.shape[0]
 	tiled_mean = np.tile(mean_vector, (n,1))
 	tiled_sd = np.tile(sd_vector, (n,1))
@@ -333,13 +341,14 @@ def task2(x,y,r):
 	x_norm = normalize_data(x)
 
 	# Compute the LLH of your model
-	old_llh = llh(x,y,r)
+	old_llh = llh(x_norm,y,r)
 	new_llh = 0
 
 	while abs(old_llh - new_llh) > THRESH:
 		grad = calc_gradient(x,y,r)
 		# Run until delta-LLH is very small
-		new_llh = np.add(old_llh, BOLD_DRIVER * grad)
+		r = r + BOLD_DRIVER * grad
+		new_llh = llh(x,y,r)
 
 		if old_llh < new_llh:
 			BOLD_DRIVER *= DECREASE
@@ -432,8 +441,10 @@ corpus = None
 
 training = "s3://chrisjermainebucket/comp330_A5/TrainingDataOneLinePerDoc.txt"
 small_test = "s3://chrisjermainebucket/comp330_A5/TestingDataOneLinePerDoc.txt"
+small_training = "s3://chrisjermainebucket/comp330_A5/SmallTrainingDataOneLinePerDoc.txt"
 
-keyAndText = get_key_and_text(training)
+# keyAndText = get_key_and_text(training)
+keyAndText = get_key_and_text(small_training)
 keyAndText.cache()
 num_docs = keyAndText.count()
 dictionary = lab5()
@@ -448,8 +459,8 @@ variance = get_sd_vector(x, mean)
 task1()
 
 k = x.shape[1]
-k += 1  # OPTIONAL FOR LEARNING INTERCEPT TERM
-initial_r = np.full((k, 1), 1)  # (k,1)
+# initial_r = np.full(k, .1)  # (k,1)
+initial_r = np.asmatrix(np.full((k, 1), .1)) # (k,1)
 new_r = task2(x,y,r)
 
 F1 = task3(small_test, new_r)
