@@ -93,7 +93,6 @@ def cons_training_feature_vectors(filename):
 	tf_idf_np = np.array(tf_idf_np_rdd.collect()) # gets us a list of lists
 	return tf_idf_np, keyAndText
 
-
 def cons_test_feature_vectors(filename):
 	"""
 
@@ -320,10 +319,10 @@ def cons_IDF_mat(docAndFrequencies):
 	wordDocAllOccurrencesRDD = wordDocSingleOccurrences.reduceByKey(
 		lambda x, y: x + y).collectAsMap()
 	allWordDocOccurrencesArr = wordDocAllOccurrencesRDD[1]
-	IDF = np.full(lenDictionary, num_docs)
-	IDF = np.divide(IDF, allWordDocOccurrencesArr)
-	IDF = np.log(IDF)
-	return IDF
+	idf = np.full(lenDictionary, num_docs)
+	idf = np.divide(idf, allWordDocOccurrencesArr)
+	idf = np.log(idf)
+	return idf
 
 def cons_TF_IDF(docAndFrequencies, numWordsInDoc, IDF):
 	"""
@@ -338,7 +337,7 @@ def cons_TF_IDF(docAndFrequencies, numWordsInDoc, IDF):
 	:param numWordsInDoc: 
 	:return: 
 	"""
-	global num_docs, lenDictionary,allWordDocOccurrences, dictionary, sortedWordDocOccurrences, topWords, IDF, titles_of_interest
+	global num_docs, lenDictionary,allWordDocOccurrences, dictionary, sortedWordDocOccurrences, topWords, titles_of_interest
 	pre_TF_d = docAndFrequencies.join(numWordsInDoc)
 	TF_d = pre_TF_d.map(lambda x: (x[0], x[1][0] / (x[1][1] * 1.) ) )
 	TF_IDF = TF_d.map(lambda x: (x[0], x[1] * IDF))
@@ -385,13 +384,13 @@ def task3(test_file_name, r):
 	# rangeN = sc.parallelize(range(testKeyAndText.count()))
 	# docAndOrder = testKeyAndText.map(lambda x: ()) # [(0, docName), (1, docName), ...]
 
-test_x, testKeyAndText = cons_feature_vectors(test_file_name)
-norm_test_x = normalize_data(test_x)
+	test_x, testKeyAndText = cons_test_feature_vectors(test_file_name)
+	norm_test_x = normalize_data(test_x)
 
 	actual_y = cons_label_vector(testKeyAndText)
 
 	# Evaluate your model
-	f1, false_pos_indices = predict(norm_test_x, predicted_y, r)
+	f1, false_pos_indices = predict(norm_test_x, actual_y, r)
 	# Predict whether each point corresponds to australian cases
 	# Compute the F1 score obtained by the classifier
 
@@ -399,7 +398,6 @@ norm_test_x = normalize_data(test_x)
 	false_pos_text = []
 	for i in false_pos_indices:
 		false_pos_text.append(testKeyAndText[i]) # TODO: can we do this???
-
 	return F1, false_pos_text
 
 def predict(x, y, r):
