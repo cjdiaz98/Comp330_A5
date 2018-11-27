@@ -145,12 +145,13 @@ def llh(x,y,r):
 	global PENALTY
 	n = y.count()
 	# this first part encompasses the log(1) and the product y*x*r
-	x_r = x.map(lambda z: (z[0], np.dot(z[1], r)))
-	y_x_r = x_r.join(y).map(lambda z: (1, np.sum(z[1][0] * z[1][1])) )
+	x_r = x.map(lambda z: (z[0], np.sum(np.dot(z[1], r))))
+	y_x_r = x_r.join(y).map(lambda z: (1, z[1][0] * z[1][1]) )
 	tot_sum = y_x_r.reduceByKey(opr.add).lookup(1)[0]
 	# second part encompasses term
 	# -log(1+e^{x_i*r})
-	neg_log_term = x_r.map(lambda x: (1, -1 * math.log(1 + math.exp(x[1]))))
+	# neg_log_term = x_r.map(lambda z: (1, -1 * z[1])) # TODO: temporary fix to math range error
+	neg_log_term = x_r.map(lambda z: (1, -1 * math.log(1 + math.exp(z[1]))))
 	neg_log_term = neg_log_term.reduceByKey(opr.add)
 	tot_sum += neg_log_term.lookup(1)[0]
 	# Note: we're using regularaization, so we add the L2 Norm to our Loss Function (LLH)
@@ -185,11 +186,13 @@ def calc_gradient(x,y,r):
 	combined_log_term = combined_log_term.map(lambda z: (1,z[1][0][0] * z[1][0][1] * z[1][1]))
 	combined_log_term = np.transpose(np.asmatrix(combined_log_term.reduceByKey(lambda a,b: np.add(a,b)).lookup(1)))
 	# calculate the gradient of the L2 Norm
-	ones_k = np.full((k,1),1)
-	sqrt_r = np.sqrt(np.abs(2*r))
-	l2_norm_grad = PENALTY * .5 * np.divide(ones_k, sqrt_r) # (k,1)
+	# ones_k = np.full((k,1),1)
+	# sqrt_r = np.sqrt(np.abs(np.square(r))) # todo: no longer need
+	l2_norm_grad = PENALTY * 2 * r # (k,1)
+	# l2_norm_grad = PENALTY * .5 * np.divide(ones_k, sqrt_r) # (k,1) # TODO: ond gradient calculation
 	# Now we combine together the three vectors
 	combined_partial = y_x + combined_log_term + l2_norm_grad
+	combined_partial /= x.count() # TODO: maybe get rid of?
 	return combined_partial # (k,1)
 
 def get_mean_vector(x):
@@ -199,7 +202,7 @@ def get_mean_vector(x):
 	:return: 
 	"""
 	x_sum = x.map(lambda z: (1, z[1]))
-	x_sum = x_sum.reduceByKey(opr.add).lookup(1)[0] # sum the rows together
+	x_sum = x_sum.reduceByKey(np.add).lookup(1)[0] # sum the rows together
 	n = x.count()
 	x_mean = x_sum / (n * 1.)
 	return x_mean
@@ -213,8 +216,8 @@ def get_sd_vector(x, x_mean):
 	"""
 	n = x.count()
 	x_diff = x.map(lambda z: (1, np.square(np.subtract(z[1], x_mean))))
-	diff_sum = x_diff.reduceByKey(opr.add).lookup(1)[0] # sum the rows together
-	return np.sqrt(diff_sum / (n*1.))
+	diff_sum = x_diff.reduceByKey(np.add).lookup(1)[0] # sum the rows together
+	return np.sqrt(diff_sum / (n-1) * 1.)
 
 def normalize_data(x):
 	"""
@@ -233,6 +236,25 @@ def normalize_data(x):
 	# todo: needed this ^ because for some reason, I got SD's of 0
 	normalized_x = x.map(lambda z: (z[0], np.divide(np.subtract(z[1], mean_vector), sd_vector)))
 	return normalized_x
+
+def check_mean_0(x):
+	"""
+	Returns a list of the indices of the vector x where the 
+	mean isn't equal to 0 or really close
+	:param x: 
+	:return: 
+	"""
+	thresh = 1e-2
+	mean_x = get_mean_vector(x)
+	return np.where(np.abs(mean_x) > thresh)
+
+def check_sd_1(x):
+	thresh = 1e-2
+	mean_x = get_mean_vector(x)
+	sd = get_sd_vector(x, mean_x)
+	diff = np.abs(np.subtract( np.full(sd.shape,1), sd))
+	return np.where(diff > thresh)
+
 
 def get_k_largest_coeff_indices(k, r):
 	"""
@@ -342,7 +364,7 @@ def task2(x,y,r):
 	Note: k = 20000 in this case
 	:return: 
 	"""
-	THRESH = 10e-6
+	THRESH = 10e-4
 	BOLD_DRIVER = 1.
 	INCREASE = 1.05
 	DECREASE = .5
@@ -355,6 +377,7 @@ def task2(x,y,r):
 	old_llh = llh(x_norm,y,r)
 	new_llh = 0
 	while abs(old_llh - new_llh) > THRESH:
+		print("LLH %f" % old_llh)
 		grad = calc_gradient(x_norm,y,r)
 		# Run until delta-LLH is very small
 		r = r + BOLD_DRIVER * grad
@@ -406,6 +429,7 @@ def predict(x, y, r):
 	actual_positives = 0
 	true_positives = 0
 	false_positives = []
+	x_y = x.join(y)
 
 	for index in range(len(y)):
 		if ((np.dot(x[index], r) > 0) and (y[index] > 0)):
@@ -453,17 +477,42 @@ training = "s3://chrisjermainebucket/comp330_A5/TrainingDataOneLinePerDoc.txt"
 small_test = "s3://chrisjermainebucket/comp330_A5/TestingDataOneLinePerDoc.txt"
 small_training = "s3://chrisjermainebucket/comp330_A5/SmallTrainingDataOneLinePerDoc.txt"
 
+###### TODO: COMPUTE SMALL  ########
 # keyAndText = get_key_and_text(training)
-keyAndText = get_key_and_text(small_training)
+smallKeyAndText = get_key_and_text(small_training)
 # keyAndText.cache()
-num_docs = keyAndText.count()
-dictionary = lab5()
+small_num_docs = smallKeyAndText.count()
+small_dictionary = lab5()
 # dictionary.cache()
-lenDictionary = dictionary.count()
+smallLenDictionary = small_dictionary.count()
 
-x, keyAndText = cons_training_feature_rdd(small_training) # feature vectors
+small_x, smallKeyAndText = cons_training_feature_rdd(small_training) # feature vectors
 # x, keyAndText = cons_feature_vectors(training) # feature vectors
-y = cons_label_rdd(keyAndText) # takes the form 1 for yes, 0 for no
+small_y = cons_label_rdd(smallKeyAndText) # takes the form 1 for yes, 0 for no
+
+##############
+
+###### TODO: COMPUTE BIG ########
+bigKeyAndText = get_key_and_text(training)
+# keyAndText.cache()
+big_num_docs = bigKeyAndText.count()
+big_dictionary = lab5()
+# dictionary.cache()
+bigLenDictionary = big_dictionary.count()
+
+big_x, bigKeyAndText = cons_training_feature_rdd(training) # feature vectors
+# x, keyAndText = cons_feature_vectors(training) # feature vectors
+big_y = cons_label_rdd(bigKeyAndText) # takes the form 1 for yes, 0 for no
+##############
+
+dictionary = small_dictionary
+lenDictionary = smallLenDictionary
+num_docs = small_num_docs
+x = small_x
+y = small_y
+
+# NOTE: make sure to assign dictionary and lenDictionary to the version that you want
+
 # mean = get_mean_vector(x) # TODO: calculate the mean and variance of the training data
 # variance = get_sd_vector(x, mean)
 
@@ -471,6 +520,7 @@ task1()
 
 k = x.take(1)[0][1].size
 # initial_r = np.full(k, .1)  # (k,1)
+# initial_r = np.asmatrix(np.full((k, 1), .1)) # (k,1)
 initial_r = np.asmatrix(np.full((k, 1), .1)) # (k,1)
 new_r = task2(x,y,initial_r)
 
