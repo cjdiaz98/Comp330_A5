@@ -51,7 +51,6 @@ def lab5():
 	# allDictWords = dictionary.map(lambda x: x[0])
 	return dictionary
 
-
 def consNumpyArray(listPositions, sizeArray):
 	#listPositions is a list of (doc, rank), with rank between
 	# 1 and sizeArray --> we have to subtract 1 to indx
@@ -76,7 +75,6 @@ def get_doc_np_arr(keyAndText):
 	# (doc, [ posInDictionary,...]
 	docNumpyWordCounts = docCollectPosRDD.map(lambda x: (x[0], consNumpyArray(x[1],lenDictionary)))
 	return docNumpyWordCounts
-
 
 def cons_training_feature_rdd(filename):
 	"""
@@ -145,17 +143,16 @@ def llh(x,y,r):
 	:return: 
 	"""
 	global PENALTY
-	n = y.size
+	n = y.count()
 	# this first part encompasses the log(1) and the product y*x*r
 	x_r = x.map(lambda z: (z[0], np.dot(z[1], r)))
-	y_x_r = x_r.join(y).map(lambda z: (1, z[1][0] * z[1][1]) )
-	tot_sum = y_x_r.reduceByKey(opr.add).lookup(1)
-
+	y_x_r = x_r.join(y).map(lambda z: (1, np.sum(z[1][0] * z[1][1])) )
+	tot_sum = y_x_r.reduceByKey(opr.add).lookup(1)[0]
 	# second part encompasses term
 	# -log(1+e^{x_i*r})
 	neg_log_term = x_r.map(lambda x: (1, -1 * math.log(1 + math.exp(x[1]))))
-	neg_log_term.reduceByKey(opr.add)
-	tot_sum += neg_log_term.lookup(1)
+	neg_log_term = neg_log_term.reduceByKey(opr.add)
+	tot_sum += neg_log_term.lookup(1)[0]
 	# Note: we're using regularaization, so we add the L2 Norm to our Loss Function (LLH)
 	# last part encompasses the L2 Norm
 	l2_norm = PENALTY * np.sqrt(np.sum(np.square(r)))
@@ -172,29 +169,27 @@ def calc_gradient(x,y,r):
 	:param r: 
 	:return: 
 	"""
-	k = x.shape[1]
-	n = y.size
+	k = x.take(1)[0][1].shape[0]
+	n = y.count()
 	# should be of dimension (n,k)
 	# calculate gradient of y(x*r)
 	y_x = x.join(y)
 	y_x = y_x.map(lambda z: (1, z[1][0] * z[1][1]))
-	y_x = y_x.reduceByKey(opr.add)
-
+	y_x = np.transpose(np.asmatrix(y_x.reduceByKey(np.add).lookup(1)[0]))
 	# Now calculate the gradient of the second half :
 	# -log(1+e^{x_i*r})
-	x_r = x.map(lambda z: (z[0], np.dot(z[1], r)))
+	x_r = x.map(lambda z: (z[0], np.sum(x_r_calc(z[1], r))))
 	e_x_r = x_r.map(lambda z: (z[0], math.exp(z[1])))
 	denom = e_x_r.map(lambda z: (z[0], -1. / (1 + z[1])))
 	combined_log_term = e_x_r.join(denom).join(x)
 	combined_log_term = combined_log_term.map(lambda z: (1,z[1][0][0] * z[1][0][1] * z[1][1]))
-	combined_log_term = combined_log_term.reduceByKey(opr.add)
-
+	combined_log_term = np.transpose(np.asmatrix(combined_log_term.reduceByKey(lambda a,b: np.add(a,b)).lookup(1)))
 	# calculate the gradient of the L2 Norm
 	ones_k = np.full((k,1),1)
 	sqrt_r = np.sqrt(np.abs(2*r))
 	l2_norm_grad = PENALTY * .5 * np.divide(ones_k, sqrt_r) # (k,1)
 	# Now we combine together the three vectors
-	combined_partial = y_x.lookup(1) + combined_log_term.lookup(1) + l2_norm_grad
+	combined_partial = y_x + combined_log_term + l2_norm_grad
 	return combined_partial # (k,1)
 
 def get_mean_vector(x):
@@ -204,7 +199,7 @@ def get_mean_vector(x):
 	:return: 
 	"""
 	x_sum = x.map(lambda z: (1, z[1]))
-	x_sum = x_sum.reduceByKey(opr.add).lookup(1) # sum the rows together
+	x_sum = x_sum.reduceByKey(opr.add).lookup(1)[0] # sum the rows together
 	n = x.count()
 	x_mean = x_sum / (n * 1.)
 	return x_mean
@@ -216,11 +211,9 @@ def get_sd_vector(x, x_mean):
 	:param x_mean: 
 	:return: 
 	"""
-	n = x.shape[0]
-
+	n = x.count()
 	x_diff = x.map(lambda z: (1, np.square(np.subtract(z[1], x_mean))))
-	diff_sum = x_diff.reduceByKey(opr.add).lookup(1) # sum the rows together
-
+	diff_sum = x_diff.reduceByKey(opr.add).lookup(1)[0] # sum the rows together
 	return np.sqrt(diff_sum / (n*1.))
 
 def normalize_data(x):
@@ -238,7 +231,6 @@ def normalize_data(x):
 	sd_vector = get_sd_vector(x,mean_vector)
 	sd_vector[sd_vector == 0] = 1
 	# todo: needed this ^ because for some reason, I got SD's of 0
-
 	normalized_x = x.map(lambda z: (z[0], np.divide(np.subtract(z[1], mean_vector), sd_vector)))
 	return normalized_x
 
@@ -314,10 +306,10 @@ def cons_frequency_rdd(keyAndText):
 
 def cons_IDF_mat(docAndFrequencies):
 	wordDocSingleOccurrences = docAndFrequencies.map(
-		lambda x: (1, np.clip(x[1][0], 0, 1)))  # map all to the same key
+		lambda x: (1, np.clip(x[1], 0, 1)))  # map all to the same key
 	wordDocAllOccurrencesRDD = wordDocSingleOccurrences.reduceByKey(
-		lambda x, y: x + y).collectAsMap()
-	allWordDocOccurrencesArr = wordDocAllOccurrencesRDD[1]
+		opr.add)
+	allWordDocOccurrencesArr = wordDocAllOccurrencesRDD.lookup(1)
 	idf = np.full(lenDictionary, num_docs)
 	idf = np.divide(idf, allWordDocOccurrencesArr)
 	idf = np.log(idf)
@@ -383,10 +375,10 @@ def task3(test_file_name, r):
 	# rangeN = sc.parallelize(range(testKeyAndText.count()))
 	# docAndOrder = testKeyAndText.map(lambda x: ()) # [(0, docName), (1, docName), ...]
 
-	test_x, testKeyAndText = cons_test_feature_vectors(test_file_name)
+	test_x, testKeyAndText = cons_test_feature_rdd(test_file_name)
 	norm_test_x = normalize_data(test_x)
 
-	actual_y = cons_label_vector(testKeyAndText)
+	actual_y = cons_label_rdd(testKeyAndText)
 
 	# Evaluate your model
 	f1, false_pos_indices = predict(norm_test_x, actual_y, r)
@@ -469,18 +461,25 @@ dictionary = lab5()
 # dictionary.cache()
 lenDictionary = dictionary.count()
 
-x, keyAndText = cons_training_feature_vectors(small_training) # feature vectors
+x, keyAndText = cons_training_feature_rdd(small_training) # feature vectors
 # x, keyAndText = cons_feature_vectors(training) # feature vectors
-y = cons_label_vector(keyAndText) # takes the form 1 for yes, 0 for no
+y = cons_label_rdd(keyAndText) # takes the form 1 for yes, 0 for no
 # mean = get_mean_vector(x) # TODO: calculate the mean and variance of the training data
 # variance = get_sd_vector(x, mean)
 
 task1()
 
-k = x.shape[1]
+k = x.take(1)[0][1].size
 # initial_r = np.full(k, .1)  # (k,1)
 initial_r = np.asmatrix(np.full((k, 1), .1)) # (k,1)
 new_r = task2(x,y,initial_r)
+
+# TODO: WE HAVE THE FOLLOWING TO TEST OUR CODE:
+x_norm = normalize_data(x)
+old_llh = llh(x_norm,y,initial_r)
+grad = calc_gradient(x_norm,y,initial_r)
+
+##################
 
 testKeyAndText = get_key_and_text(small_test)
 testKeyAndText, testNumWordsInDoc = get_doc_rdd(small_test) # have this for testing purposes
