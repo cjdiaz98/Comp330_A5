@@ -2,6 +2,7 @@ import re
 import numpy as np
 from collections import defaultdict
 import math
+import operator as opr
 
 allDictWords = None
 
@@ -77,7 +78,7 @@ def get_doc_np_arr(keyAndText):
 	return docNumpyWordCounts
 
 
-def cons_training_feature_vectors(filename):
+def cons_training_feature_rdd(filename):
 	"""
 	
 	:param keyAndText: 
@@ -91,11 +92,10 @@ def cons_training_feature_vectors(filename):
 	IDF = cons_IDF_mat(docAndFrequencies)
 	tf_idf_rdd = cons_TF_IDF(docAndFrequencies, numWordsInDoc, IDF)
 	# tf_idf_np_rdd = tf_idf_rdd.map(lambda x: x[1])
-	tf_idf_np_rdd = tf_idf_rdd.map(lambda x: np.append(x[1],1)) # TODO: this is if we want to add an intercept!
-	tf_idf_np = np.array(tf_idf_np_rdd.collect()) # gets us a list of lists
-	return tf_idf_np, keyAndText
+	tf_idf_np_rdd = tf_idf_rdd.map(lambda x: (x[0] ,np.append(x[1],1))) # TODO: this is if we want to add an intercept!
+	return tf_idf_np_rdd, keyAndText
 
-def cons_test_feature_vectors(filename):
+def cons_test_feature_rdd(filename):
 	"""
 
 	:param keyAndText: 
@@ -108,7 +108,7 @@ def cons_test_feature_vectors(filename):
 	docAndFrequencies = cons_frequency_rdd(keyAndText)
 	tf_idf_rdd = cons_TF_IDF(docAndFrequencies, numWordsInDoc, IDF)
 	# tf_idf_np_rdd = tf_idf_rdd.map(lambda x: x[1])
-	tf_idf_np_rdd = tf_idf_rdd.map(lambda x: np.append(x[1],1))  # TODO: this is if we want to add an intercept!
+	tf_idf_np_rdd = tf_idf_rdd.map(lambda x: (x[0] ,np.append(x[1],1))) # TODO: this is if we want to add an intercept!
 	tf_idf_np = np.array(tf_idf_np_rdd.collect())  # gets us a list of lists
 	return tf_idf_np, keyAndText
 
@@ -122,7 +122,7 @@ def get_key_and_text(filename):
 	keyAndText.cache()
 	return keyAndText
 
-def cons_label_vector(docNameRDD):
+def cons_label_rdd(docNameRDD):
 	"""
 	:param docNameRDD - an RDD of the form [(doc name, ---),...]
 		constructs our label vector 
@@ -130,9 +130,8 @@ def cons_label_vector(docNameRDD):
 	Will be of dimension
 	"""
 	regex = re.compile('AU(.)*')
-	labels = docNameRDD.map(lambda x: 1. * bool(regex.match(x[0])))
-	np_arr = np.array(labels.collect())
-	return np.transpose(np.asmatrix(np_arr))
+	labels = docNameRDD.map(lambda x: (x[0], 1. * bool(regex.match(x[0]) )))
+	return labels
 
 def x_r_calc(x,r):
 	return np.dot(x,r)
@@ -148,15 +147,15 @@ def llh(x,y,r):
 	global PENALTY
 	n = y.size
 	# this first part encompasses the log(1) and the product y*x*r
-	x_r = x_r_calc(x,r)
-	y_x_r = np.multiply(y,x_r)
-	tot_sum = np.sum(y_x_r)
+	x_r = x.map(lambda z: (z[0], np.dot(z[1], r)))
+	y_x_r = x_r.join(y).map(lambda z: (1, z[1][0] * z[1][1]) )
+	tot_sum = y_x_r.reduceByKey(opr.add).lookup(1)
+
 	# second part encompasses term
 	# -log(1+e^{x_i*r})
-	inner_exp = np.exp(x_r)
-	inner_exp += np.full((n,1), 1) # TODO!
-	log_term = np.log(inner_exp)
-	tot_sum -= log_term.sum()
+	neg_log_term = x_r.map(lambda x: (1, -1 * math.log(1 + math.exp(x[1]))))
+	neg_log_term.reduceByKey(opr.add)
+	tot_sum += neg_log_term.lookup(1)
 	# Note: we're using regularaization, so we add the L2 Norm to our Loss Function (LLH)
 	# last part encompasses the L2 Norm
 	l2_norm = PENALTY * np.sqrt(np.sum(np.square(r)))
@@ -176,30 +175,27 @@ def calc_gradient(x,y,r):
 	k = x.shape[1]
 	n = y.size
 	# should be of dimension (n,k)
-	y_tile = np.tile(y,(1,k))
-	y_x = np.multiply(y_tile, x)
-	#todo: check if we need below
-	y_x = np.sum(y_x, 0) # (1, k)
-	y_x = np.transpose(y_x) # (k,1)
+	# calculate gradient of y(x*r)
+	y_x = x.join(y)
+	y_x = y_x.map(lambda z: (1, z[1][0] * z[1][1]))
+	y_x = y_x.reduceByKey(opr.add)
+
 	# Now calculate the gradient of the second half :
 	# -log(1+e^{x_i*r})
-	# ones_n = np.full(n,1)
-	ones_n = np.full((n,1),1)
-	e_x_r = np.exp(x_r_calc(x,r)) # (n,1)
-	inner_term = np.add(ones_n, e_x_r) # (n,1)
-	quotient = np.divide(-1. * ones_n, inner_term) # (n,1)
-	quotient_tile = np.tile(quotient, (1,k)) # (n,k)
-	exr_tile = np.tile(e_x_r, (1, k)) # (n,k)
-	# r_tile = np.tile(r, (1,n)) # (k,n) # todo: do we even have to use this? probably not!
-	chain_product = np.multiply(np.transpose(x),np.transpose(np.multiply(quotient_tile, exr_tile))) # (k,n)
-	summed_partial = np.sum(chain_product, 1)
+	x_r = x.map(lambda z: (z[0], np.dot(z[1], r)))
+	e_x_r = x_r.map(lambda z: (z[0], math.exp(z[1])))
+	denom = e_x_r.map(lambda z: (z[0], -1. / (1 + z[1])))
+	combined_log_term = e_x_r.join(denom).join(x)
+	combined_log_term = combined_log_term.map(lambda z: (1,z[1][0][0] * z[1][0][1] * z[1][1]))
+	combined_log_term = combined_log_term.reduceByKey(opr.add)
+
 	# calculate the gradient of the L2 Norm
 	ones_k = np.full((k,1),1)
 	sqrt_r = np.sqrt(np.abs(2*r))
 	l2_norm_grad = PENALTY * .5 * np.divide(ones_k, sqrt_r) # (k,1)
 	# Now we combine together the three vectors
-	combined_partial = y_x + summed_partial + l2_norm_grad
-	return combined_partial# (k,1)
+	combined_partial = y_x.lookup(1) + combined_log_term.lookup(1) + l2_norm_grad
+	return combined_partial # (k,1)
 
 def get_mean_vector(x):
 	"""
@@ -207,8 +203,9 @@ def get_mean_vector(x):
 	:param x: the matrix of feature vectors
 	:return: 
 	"""
-	x_sum = np.sum(x, 0) # sum the rows together
-	n = x.shape[1]
+	x_sum = x.map(lambda z: (1, z[1]))
+	x_sum = x_sum.reduceByKey(opr.add).lookup(1) # sum the rows together
+	n = x.count()
 	x_mean = x_sum / (n * 1.)
 	return x_mean
 
@@ -220,10 +217,11 @@ def get_sd_vector(x, x_mean):
 	:return: 
 	"""
 	n = x.shape[0]
-	x_mean_tiled = np.tile(x_mean, (n,1))
-	diff = np.subtract(x, x_mean_tiled)
-	square_diff = np.square(diff)
-	return np.sqrt(np.sum(square_diff,0) / (n*1.))
+
+	x_diff = x.map(lambda z: (1, np.square(np.subtract(z[1], x_mean))))
+	diff_sum = x_diff.reduceByKey(opr.add).lookup(1) # sum the rows together
+
+	return np.sqrt(diff_sum / (n*1.))
 
 def normalize_data(x):
 	"""
@@ -240,10 +238,8 @@ def normalize_data(x):
 	sd_vector = get_sd_vector(x,mean_vector)
 	sd_vector[sd_vector == 0] = 1
 	# todo: needed this ^ because for some reason, I got SD's of 0
-	n = x.shape[0]
-	tiled_mean = np.tile(mean_vector, (n,1))
-	tiled_sd = np.tile(sd_vector, (n,1))
-	normalized_x = np.divide(np.subtract(x, tiled_mean), tiled_sd)
+
+	normalized_x = x.map(lambda z: (z[0], np.divide(np.subtract(z[1], mean_vector), sd_vector)))
 	return normalized_x
 
 def get_k_largest_coeff_indices(k, r):
