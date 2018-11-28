@@ -436,31 +436,41 @@ true_positives = 0
 false_positives = []
 
 def test_x_y(x_y_tup, r):
+	"""
+
+	:param x_y_tup: form (doc, (x vector, y scalar))
+	:param r: 
+	:return: 
+	"""
 	global claimed_positives, actual_positives, true_positives, correct, false_positives
 	x = x_y_tup[1][0]
 	y = x_y_tup[1][1]
-	if ((np.dot(x, r) > 0) and (y > 0)):
+	if ((np.dot(x, r) > 0) and (y == 1)):
 		# true positive
-		claimed_positives += 1
-		actual_positives += 1
-		true_positives += 1
-		print('success - true positive')
-		correct = correct + 1
-	elif ((np.dot(x, r) < 0) and (y < 0)):
+		# claimed_positives += 1
+		# actual_positives += 1
+		# true_positives += 1
+		# print('success - true positive')
+		# correct = correct + 1
+		return (1,(1, x_y_tup[0]))
+	elif ((np.dot(x, r) < 0) and (y == 0)):
 		# true negative
-		print('success - true negative')
-		correct = correct + 1
-	elif ((np.dot(x, r) > 0) and (y < 0)):
-		claimed_positives += 1
-		# false positive
-		print('failure - false positive')
-		if len(false_positives) < 3:
-			false_positives.append(x_y_tup[0])
+		# print('success - true negative')
+		# correct = correct + 1
+		return (2,(1,x_y_tup[0]))
+	elif ((np.dot(x, r) > 0) and (y == 0)):
+		# claimed_positives += 1
+		# # false positive
+		# print('failure - false positive')
+		# if len(false_positives) < 3:
+		# 	false_positives.append(x_y_tup[0])
+		return (3, (1,x_y_tup[0]))
 	else:
-		actual_positives += 1
-		# ((np.dot(x[index], w) < 0) and (y[index] > 0)):
-		# false negative
-		print('failure - false negative')
+		# actual_positives += 1
+		# # ((np.dot(x[index], w) < 0) and (y[index] > 0)):
+		# # false negative
+		# print('failure - false negative')
+		return (4,(1,x_y_tup[0]))
 
 
 def predict(x, y, r):
@@ -474,13 +484,25 @@ def predict(x, y, r):
 	:return: 
 	"""
 	global claimed_positives, actual_positives, true_positives, correct, false_positives
-	correct = 0
-	claimed_positives = 0
-	actual_positives = 0
-	true_positives = 0
 	false_positives = []
 	x_y = x.join(y)
-	x_y.foreachRDD(test_x_y)
+	# x_y.foreach(lambda z: test_x_y(z, r))
+	results = x_y.map(lambda z: test_x_y(z, r))
+	# results = x_y.map(lambda z: test_x_y(z, new_r_nn))
+	results_agg = results.map(lambda z: (z[0], z[1][0]))
+	results_agg = results_agg.reduceByKey(opr.add)
+	doc_and_cat = results.map(lambda z: (z[0], z[1][1]))
+	false_pos_rdd = doc_and_cat.filter(lambda z: z[0] == 3).take(10)
+
+	res1 = results_agg.lookup(1)
+	res2 = results_agg.lookup(2)
+	res3 = results_agg.lookup(3)
+	res4 = results_agg.lookup(4)
+	correct = res1 + res2
+	claimed_positives = res1 + res3
+	actual_positives  = res1 + res4
+	true_positives = res1
+
 	recall = true_positives * 1. / actual_positives
 	precision = true_positives * 1. / claimed_positives
 	print("True positives: %d. Actual positives: %d .claimed positives: %d"
@@ -491,7 +513,7 @@ def predict(x, y, r):
 	print('%d out of %d correct.' % (correct, len(y)))
 	print("f1 score: %f" % f1_score)
 	# TODO: possibly return tuple containing F1 score,
-		# and list of three false-positive texts
+	# and list of three false-positive texts
 	return f1_score,false_positives
 
 ######################
@@ -522,20 +544,21 @@ x = small_x
 # x, keyAndText = cons_feature_vectors(training) # feature vectors
 small_y = cons_label_rdd(smallKeyAndText) # takes the form 1 for yes, 0 for no
 y = small_y
+new_r_nn = task2(small_x,small_y,initial_r)
 
 ##############
 
 ###### TODO: COMPUTE BIG ########
-bigKeyAndText = get_key_and_text(training)
-# keyAndText.cache()
-big_num_docs = bigKeyAndText.count()
-big_dictionary = lab5()
-# dictionary.cache()
-bigLenDictionary = big_dictionary.count()
-
-big_x, bigKeyAndText = cons_training_feature_rdd(training) # feature vectors
-# x, keyAndText = cons_feature_vectors(training) # feature vectors
-big_y = cons_label_rdd(bigKeyAndText) # takes the form 1 for yes, 0 for no
+# bigKeyAndText = get_key_and_text(training)
+# # keyAndText.cache()
+# big_num_docs = bigKeyAndText.count()
+# big_dictionary = lab5()
+# # dictionary.cache()
+# bigLenDictionary = big_dictionary.count()
+#
+# big_x, bigKeyAndText = cons_training_feature_rdd(training) # feature vectors
+# # x, keyAndText = cons_feature_vectors(training) # feature vectors
+# big_y = cons_label_rdd(bigKeyAndText) # takes the form 1 for yes, 0 for no
 ##############
 x = small_x
 y = small_y
@@ -583,7 +606,9 @@ list1 = ['applicant', 'pty', 'mr', 'ltd', 'evidence', 'proceeding', 'relevant', 
 # test_x,testKeyAndText = cons_test_feature_rdd(small_test)
 # test_y = cons_label_rdd(testKeyAndText)
 test_x, testKeyAndText = cons_test_feature_rdd(small_test)
-norm_test_x = normalize_data(test_x)
+x = test_x
 actual_y = cons_label_rdd(testKeyAndText)
+y = actual_y
+norm_test_x = normalize_data(test_x)
 
 F1, false_pos_text = task3(small_test, new_r)
