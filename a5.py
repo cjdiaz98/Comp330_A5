@@ -107,8 +107,7 @@ def cons_test_feature_rdd(filename):
 	tf_idf_rdd = cons_TF_IDF(docAndFrequencies, numWordsInDoc, IDF)
 	# tf_idf_np_rdd = tf_idf_rdd.map(lambda x: x[1])
 	tf_idf_np_rdd = tf_idf_rdd.map(lambda x: (x[0] ,np.append(x[1],1))) # TODO: this is if we want to add an intercept!
-	tf_idf_np = np.array(tf_idf_np_rdd.collect())  # gets us a list of lists
-	return tf_idf_np, keyAndText
+	return tf_idf_np_rdd, keyAndText
 
 def get_key_and_text(filename):
 	corpus = sc.textFile(filename)
@@ -117,7 +116,7 @@ def get_key_and_text(filename):
 	# now we transform it into a bunch of (docID, text) pairs
 	keyAndText = validLines.map(lambda x: (
 		x[x.index('id="') + 4: x.index('" url=')], x[x.index('">') + 2:]))
-	keyAndText.cache()
+	# keyAndText.cache()
 	return keyAndText
 
 def cons_label_rdd(docNameRDD):
@@ -156,8 +155,8 @@ def llh(x,y,r):
 	tot_sum += neg_log_term.lookup(1)[0]
 	# Note: we're using regularaization, so we add the L2 Norm to our Loss Function (LLH)
 	# last part encompasses the L2 Norm
-	l2_norm = PENALTY * np.sqrt(np.sum(np.square(r)))
-	tot_sum += l2_norm
+	l2_norm = PENALTY * np.sum(np.square(r))
+	tot_sum -= l2_norm
 	return tot_sum
 
 def calc_gradient(x,y,r):
@@ -188,11 +187,11 @@ def calc_gradient(x,y,r):
 	# calculate the gradient of the L2 Norm
 	# ones_k = np.full((k,1),1)
 	# sqrt_r = np.sqrt(np.abs(np.square(r))) # todo: no longer need
-	l2_norm_grad = PENALTY * 2 * r # (k,1)
+	l2_norm_grad = -1 * PENALTY * 2 * r # (k,1)
 	# l2_norm_grad = PENALTY * .5 * np.divide(ones_k, sqrt_r) # (k,1) # TODO: ond gradient calculation
 	# Now we combine together the three vectors
 	combined_partial = y_x + combined_log_term + l2_norm_grad
-	combined_partial /= x.count() # TODO: maybe get rid of?
+	# combined_partial /= x.count() # TODO: maybe get rid of?
 	return combined_partial # (k,1)
 
 def get_mean_vector(x):
@@ -230,11 +229,13 @@ def normalize_data(x):
 	:param x: 
 	:return: 
 	"""
+	# FACTOR = 100
+	FACTOR = 10
 	mean_vector = get_mean_vector(x)
 	sd_vector = get_sd_vector(x,mean_vector)
 	sd_vector[sd_vector == 0] = 1
 	# todo: needed this ^ because for some reason, I got SD's of 0
-	normalized_x = x.map(lambda z: (z[0], np.divide(np.subtract(z[1], mean_vector), sd_vector)))
+	normalized_x = x.map(lambda z: (z[0], np.divide(np.subtract(z[1], mean_vector), FACTOR * sd_vector)))
 	return normalized_x
 
 def check_mean_0(x):
@@ -267,14 +268,15 @@ def get_k_largest_coeff_indices(k, r):
 	# Got code from
 	# https://stackoverflow.com/questions/6910641/how-do-i-get-indices-of-n-maximum-values-in-a-numpy-array
 	# https://stackoverflow.com/questions/44409084/how-to-zip-two-1d-numpy-array-to-2d-numpy-array
-	abs_r = np.abs(r)
-	indices = np.argpartition(abs_r, -1 * k)[-1*k:]
-
-	indices_val_zip = np.column_stack(abs_r[indices], indices)
-	list_zip = list(indices_val_zip)
-	sorted(list_zip, True)
-
-	return (i[1] for i in list_zip)
+	abs_r = np.abs(r[:-1])
+	r_list_abs = np.squeeze(np.asarray(abs_r))
+	r_list = np.squeeze(np.asarray(abs_r))
+	zipped_list = zip(r_list_abs, r_list)
+	zipped_list = zip(zipped_list, range(len(r_list)))
+	zipped_list = sorted(zipped_list, reverse = True)[:k]
+	zipped_list = ((i[0][1], i[1]) for i in zipped_list)
+	assert(len(zipped_list) == k)
+	return zipped_list
 
 def get_k_most_imp_words_ordered(k,r):
 	"""
@@ -291,8 +293,9 @@ def get_k_most_imp_words_ordered(k,r):
 	top_words = []
 	rev_dict = dictionary.map(lambda entry: (entry[1], entry[0]))
 	for i in coefficient_indices:
-		word = rev_dict.lookup(i) # TODO: is this even a thing you can do?
-		top_words.append(word)
+		word = rev_dict.lookup(i[1]) # TODO: is this even a thing you can do?
+		top_words.append((word[0], i[0]))
+	return top_words
 
 def task1():
 	""""""
@@ -372,47 +375,93 @@ def task2(x,y,r):
 	# Use grad desc to learn a logistic regression model
 	# Use L2 regularization
 	# Maybe play with parameter controlling of regularization
-	x_norm = normalize_data(x)
 	# Compute the LLH of your model
-	old_llh = llh(x_norm,y,r)
-	new_llh = 0
+	old_llh = llh(x,y,r)
+	new_llh = old_llh + 1
 	while abs(old_llh - new_llh) > THRESH:
 		print("LLH %f" % old_llh)
-		grad = calc_gradient(x_norm,y,r)
+		# if old_llh > -5000:
+		if old_llh > -20000 and old_llh < -3000:
+			return r
+		old_llh = new_llh
+		grad = calc_gradient(x,y,r)
 		# Run until delta-LLH is very small
 		r = r + BOLD_DRIVER * grad
-		new_llh = llh(x_norm,y,r)
+		x_r = x.map(lambda z: (z[0], np.sum(np.dot(z[1], r))))
+		# https: // python - forum.io / Thread - OverflowError - math - range - error
+		x_r_too_large = x_r.filter(lambda z: z[1] > 700)
+		if x_r_too_large.count() > 0:
+			print("hit math range error")
+			return r
+		new_llh = llh(x,y,r)
 		if old_llh > new_llh:
 			BOLD_DRIVER *= DECREASE
 			# we want to de-incentivize decreases
 		else:
 			BOLD_DRIVER *= INCREASE
-		old_llh = new_llh
 	return r
+
+# TODO: below contains one iteration of Task2
+# old_llh = new_llh
+# print("LLH %f" % old_llh)
+# grad = calc_gradient(x_norm,y,r)
+# # Run until delta-LLH is very small
+# r = r + BOLD_DRIVER * grad
+# new_llh = llh(x_norm,y,r)
+# if old_llh > new_llh:
+# 	BOLD_DRIVER *= DECREASE
+# 	# we want to de-incentivize decreases
+# else:
+# 	BOLD_DRIVER *= INCREASE
 
 def task3(test_file_name, r):
 	""""""
-
-	# TODO: might not even have to do the below code.
-		# Only do if you need a way to index in to find a text block
-	# rangeN = sc.parallelize(range(testKeyAndText.count()))
-	# docAndOrder = testKeyAndText.map(lambda x: ()) # [(0, docName), (1, docName), ...]
-
 	test_x, testKeyAndText = cons_test_feature_rdd(test_file_name)
 	norm_test_x = normalize_data(test_x)
-
 	actual_y = cons_label_rdd(testKeyAndText)
-
 	# Evaluate your model
 	f1, false_pos_indices = predict(norm_test_x, actual_y, r)
 	# Predict whether each point corresponds to australian cases
 	# Compute the F1 score obtained by the classifier
-
 	# Retrieve the text of three false positives, for your writeup section
 	false_pos_text = []
 	for i in false_pos_indices:
 		false_pos_text.append(testKeyAndText[i]) # TODO: can we do this???
 	return F1, false_pos_text
+
+correct = 0
+claimed_positives = 0
+actual_positives = 0
+true_positives = 0
+false_positives = []
+
+def test_x_y(x_y_tup, r):
+	global claimed_positives, actual_positives, true_positives, correct, false_positives
+	x = x_y_tup[1][0]
+	y = x_y_tup[1][1]
+	if ((np.dot(x, r) > 0) and (y > 0)):
+		# true positive
+		claimed_positives += 1
+		actual_positives += 1
+		true_positives += 1
+		print('success - true positive')
+		correct = correct + 1
+	elif ((np.dot(x, r) < 0) and (y < 0)):
+		# true negative
+		print('success - true negative')
+		correct = correct + 1
+	elif ((np.dot(x, r) > 0) and (y < 0)):
+		claimed_positives += 1
+		# false positive
+		print('failure - false positive')
+		if len(false_positives) < 3:
+			false_positives.append(x_y_tup[0])
+	else:
+		actual_positives += 1
+		# ((np.dot(x[index], w) < 0) and (y[index] > 0)):
+		# false negative
+		print('failure - false negative')
+
 
 def predict(x, y, r):
 	"""
@@ -424,36 +473,14 @@ def predict(x, y, r):
 	:param r: 
 	:return: 
 	"""
+	global claimed_positives, actual_positives, true_positives, correct, false_positives
 	correct = 0
 	claimed_positives = 0
 	actual_positives = 0
 	true_positives = 0
 	false_positives = []
 	x_y = x.join(y)
-
-	for index in range(len(y)):
-		if ((np.dot(x[index], r) > 0) and (y[index] > 0)):
-			# true positive
-			claimed_positives += 1
-			actual_positives += 1
-			true_positives += 1
-			print('success - true positive')
-			correct = correct + 1
-		elif ((np.dot(x[index], r) < 0) and (y[index] < 0)):
-			# true negative
-			print('success - true negative')
-			correct = correct + 1
-		elif ((np.dot(x[index], r) > 0) and (y[index] < 0)):
-			claimed_positives += 1
-			# false positive
-			print('failure - false positive')
-			if len(false_positives) < 3:
-				false_positives.append(index)
-		else:
-			actual_positives += 1
-			# ((np.dot(x[index], w) < 0) and (y[index] > 0)):
-			# false negative
-			print('failure - false negative')
+	x_y.foreachRDD(test_x_y)
 	recall = true_positives * 1. / actual_positives
 	precision = true_positives * 1. / claimed_positives
 	print("True positives: %d. Actual positives: %d .claimed positives: %d"
@@ -463,7 +490,6 @@ def predict(x, y, r):
 	f1_score = (2 * precision * recall) / (precision + recall)
 	print('%d out of %d correct.' % (correct, len(y)))
 	print("f1 score: %f" % f1_score)
-
 	# TODO: possibly return tuple containing F1 score,
 		# and list of three false-positive texts
 	return f1_score,false_positives
@@ -482,13 +508,20 @@ small_training = "s3://chrisjermainebucket/comp330_A5/SmallTrainingDataOneLinePe
 smallKeyAndText = get_key_and_text(small_training)
 # keyAndText.cache()
 small_num_docs = smallKeyAndText.count()
+keyAndText = smallKeyAndText
+num_docs = small_num_docs
+
 small_dictionary = lab5()
 # dictionary.cache()
 smallLenDictionary = small_dictionary.count()
+dictionary = small_dictionary
+lenDictionary = smallLenDictionary
 
 small_x, smallKeyAndText = cons_training_feature_rdd(small_training) # feature vectors
+x = small_x
 # x, keyAndText = cons_feature_vectors(training) # feature vectors
 small_y = cons_label_rdd(smallKeyAndText) # takes the form 1 for yes, 0 for no
+y = small_y
 
 ##############
 
@@ -504,12 +537,9 @@ big_x, bigKeyAndText = cons_training_feature_rdd(training) # feature vectors
 # x, keyAndText = cons_feature_vectors(training) # feature vectors
 big_y = cons_label_rdd(bigKeyAndText) # takes the form 1 for yes, 0 for no
 ##############
-
-dictionary = small_dictionary
-lenDictionary = smallLenDictionary
-num_docs = small_num_docs
 x = small_x
 y = small_y
+x_norm= normalize_data(x)
 
 # NOTE: make sure to assign dictionary and lenDictionary to the version that you want
 
@@ -522,7 +552,11 @@ k = x.take(1)[0][1].size
 # initial_r = np.full(k, .1)  # (k,1)
 # initial_r = np.asmatrix(np.full((k, 1), .1)) # (k,1)
 initial_r = np.asmatrix(np.full((k, 1), .1)) # (k,1)
-new_r = task2(x,y,initial_r)
+new_r = task2(x_norm,y,initial_r)
+new_r_nn = task2(x,y,initial_r)
+
+
+most_imp = get_k_most_imp_words_ordered(50, new_r)
 
 # TODO: WE HAVE THE FOLLOWING TO TEST OUR CODE:
 x_norm = normalize_data(x)
@@ -531,7 +565,25 @@ grad = calc_gradient(x_norm,y,initial_r)
 
 ##################
 
-testKeyAndText = get_key_and_text(small_test)
-testKeyAndText, testNumWordsInDoc = get_doc_rdd(small_test) # have this for testing purposes
+####### BELOW ARE LISTS OF WORDS THAT PEOPLE GOT AS THEIR MOST IMPORTANT ######
+list1 = ['applicant', 'pty', 'mr', 'ltd', 'evidence', 'proceeding', 'relevant', 'he',
+ 'relation', 'trooper', 'his', 'clr', 'respondent', 'ms', 'i', 'hca',
+ 'applicants', 'respondents', 'costs', 'law', 'tribunal', 'government',
+ 'submissions', 'proceedings', 'are', 'satisfied', 'fca', 'can', 'iceguide',
+ 'european', 'application', 'claim', 'fcr', 'her', 'affidavit', 'act', 'honour',
+ 'whether', 'am', 'flottweg', 'pursuant', 'cl', 'australia', 'reasons',
+ 'orders', 'olivaylle', 'him', 'article', 'justice', 'states']
 
-F1 = task3(small_test, new_r)
+###########
+
+# testKeyAndText = get_key_and_text(small_test)
+# testKeyAndText, testNumWordsInDoc = get_doc_rdd(small_test) # have this for debug purposes
+
+# BELOW IS FOR TESTING YOUR TRAINED MODEL BY HAND:
+# test_x,testKeyAndText = cons_test_feature_rdd(small_test)
+# test_y = cons_label_rdd(testKeyAndText)
+test_x, testKeyAndText = cons_test_feature_rdd(small_test)
+norm_test_x = normalize_data(test_x)
+actual_y = cons_label_rdd(testKeyAndText)
+
+F1, false_pos_text = task3(small_test, new_r)
