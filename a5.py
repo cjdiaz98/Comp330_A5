@@ -146,17 +146,19 @@ def llh(x,y,r):
 	# this first part encompasses the log(1) and the product y*x*r
 	x_r = x.map(lambda z: (z[0], np.sum(np.dot(z[1], r))))
 	y_x_r = x_r.join(y).map(lambda z: (1, z[1][0] * z[1][1]) )
-	tot_sum = y_x_r.reduceByKey(opr.add).lookup(1)[0]
+	tot_sum = -1 * y_x_r.reduceByKey(opr.add).lookup(1)[0]
 	# second part encompasses term
 	# -log(1+e^{x_i*r})
 	# neg_log_term = x_r.map(lambda z: (1, -1 * z[1])) # TODO: temporary fix to math range error
+	# neg_log_term = x_r.map(lambda z: (1, -1 * math.log(z[1])))
 	neg_log_term = x_r.map(lambda z: (1, -1 * math.log(1 + math.exp(z[1]))))
 	neg_log_term = neg_log_term.reduceByKey(opr.add)
-	tot_sum += neg_log_term.lookup(1)[0]
+	tot_sum -= neg_log_term.lookup(1)[0]
 	# Note: we're using regularaization, so we add the L2 Norm to our Loss Function (LLH)
 	# last part encompasses the L2 Norm
 	l2_norm = PENALTY * np.sum(np.square(r))
-	tot_sum -= l2_norm
+	tot_sum += l2_norm
+	tot_sum /= n
 	return tot_sum
 
 def calc_gradient(x,y,r):
@@ -181,16 +183,18 @@ def calc_gradient(x,y,r):
 	x_r = x.map(lambda z: (z[0], np.sum(x_r_calc(z[1], r))))
 	e_x_r = x_r.map(lambda z: (z[0], math.exp(z[1])))
 	denom = e_x_r.map(lambda z: (z[0], -1. / (1 + z[1])))
+	# combined_log_term[np.where(combined_log_term > 10)]
 	combined_log_term = e_x_r.join(denom).join(x)
 	combined_log_term = combined_log_term.map(lambda z: (1,z[1][0][0] * z[1][0][1] * z[1][1]))
 	combined_log_term = np.transpose(np.asmatrix(combined_log_term.reduceByKey(lambda a,b: np.add(a,b)).lookup(1)))
 	# calculate the gradient of the L2 Norm
 	# ones_k = np.full((k,1),1)
 	# sqrt_r = np.sqrt(np.abs(np.square(r))) # todo: no longer need
-	l2_norm_grad = -1 * PENALTY * 2 * r # (k,1)
+	l2_norm_grad = PENALTY * 2 * r # (k,1)
 	# l2_norm_grad = PENALTY * .5 * np.divide(ones_k, sqrt_r) # (k,1) # TODO: ond gradient calculation
 	# Now we combine together the three vectors
-	combined_partial = y_x + combined_log_term + l2_norm_grad
+	combined_partial = -1 * y_x - combined_log_term + l2_norm_grad
+	combined_partial /= n
 	# combined_partial /= x.count() # TODO: maybe get rid of?
 	return combined_partial # (k,1)
 
@@ -218,7 +222,7 @@ def get_sd_vector(x, x_mean):
 	diff_sum = x_diff.reduceByKey(np.add).lookup(1)[0] # sum the rows together
 	return np.sqrt(diff_sum / (n-1) * 1.)
 
-def normalize_data(x):
+def normalize_data(x, mean_vector, sd_vector):
 	"""
 	Normalizes the data and returns the result. 
 	Does so using the equation:
@@ -230,12 +234,11 @@ def normalize_data(x):
 	:return: 
 	"""
 	# FACTOR = 100
-	FACTOR = 10
-	mean_vector = get_mean_vector(x)
-	sd_vector = get_sd_vector(x,mean_vector)
-	sd_vector[sd_vector == 0] = 1
+	# FACTOR = 10
+	aug_sd_vec = sd_vector.copy()
+	aug_sd_vec[aug_sd_vec == 0] = 1
 	# todo: needed this ^ because for some reason, I got SD's of 0
-	normalized_x = x.map(lambda z: (z[0], np.divide(np.subtract(z[1], mean_vector), FACTOR * sd_vector)))
+	normalized_x = x.map(lambda z: (z[0], np.divide(np.subtract(z[1], mean_vector), aug_sd_vec)))
 	return normalized_x
 
 def check_mean_0(x):
@@ -253,8 +256,10 @@ def check_sd_1(x):
 	thresh = 1e-2
 	mean_x = get_mean_vector(x)
 	sd = get_sd_vector(x, mean_x)
+	# return sd
 	diff = np.abs(np.subtract( np.full(sd.shape,1), sd))
-	return np.where(diff > thresh)
+	return diff
+	# return np.where(diff > thresh)
 
 
 def get_k_largest_coeff_indices(k, r):
@@ -275,7 +280,7 @@ def get_k_largest_coeff_indices(k, r):
 	zipped_list = zip(zipped_list, range(len(r_list)))
 	zipped_list = sorted(zipped_list, reverse = True)[:k]
 	zipped_list = ((i[0][1], i[1]) for i in zipped_list)
-	assert(len(zipped_list) == k)
+	# assert(len(zipped_list) == k)
 	return zipped_list
 
 def get_k_most_imp_words_ordered(k,r):
@@ -380,21 +385,26 @@ def task2(x,y,r):
 	new_llh = old_llh + 1
 	while abs(old_llh - new_llh) > THRESH:
 		print("LLH %f" % old_llh)
+		print("BOLD DRIVER %f" % BOLD_DRIVER)
+		print(r)
 		# if old_llh > -5000:
-		if old_llh > -20000 and old_llh < -3000:
-			return r
+		# if old_llh > -20000 and old_llh < -3000:
+		# if old_llh > -10000:
+		# 	return r
+		## above is to debug
 		old_llh = new_llh
 		grad = calc_gradient(x,y,r)
 		# Run until delta-LLH is very small
-		r = r + BOLD_DRIVER * grad
+		r = r - BOLD_DRIVER * grad
 		x_r = x.map(lambda z: (z[0], np.sum(np.dot(z[1], r))))
 		# https: // python - forum.io / Thread - OverflowError - math - range - error
 		x_r_too_large = x_r.filter(lambda z: z[1] > 700)
 		if x_r_too_large.count() > 0:
 			print("hit math range error")
 			return r
+		## above is to debug
 		new_llh = llh(x,y,r)
-		if old_llh > new_llh:
+		if old_llh < new_llh:
 			BOLD_DRIVER *= DECREASE
 			# we want to de-incentivize decreases
 		else:
@@ -414,10 +424,10 @@ def task2(x,y,r):
 # else:
 # 	BOLD_DRIVER *= INCREASE
 
-def task3(test_file_name, r):
+def task3(test_file_name, r, x_mean, x_sd):
 	""""""
 	test_x, testKeyAndText = cons_test_feature_rdd(test_file_name)
-	norm_test_x = normalize_data(test_x)
+	norm_test_x = normalize_data(test_x, x_mean, x_sd)
 	actual_y = cons_label_rdd(testKeyAndText)
 	# Evaluate your model
 	f1, false_pos_indices = predict(norm_test_x, actual_y, r)
@@ -435,6 +445,20 @@ actual_positives = 0
 true_positives = 0
 false_positives = []
 
+def get_prob(x_y_tup, r):
+	"""
+
+	:param x_y_tup: form (doc, (x vector, y scalar))
+	:param r: 
+	:return: 
+	"""
+	global claimed_positives, actual_positives, true_positives, correct, false_positives
+	x = x_y_tup[1][0]
+	y = x_y_tup[1][1]
+	prob = 1 / (1 + math.exp(np.sum((np.dot(x, r)))))
+	CUTOFF = .5
+	return prob
+
 def test_x_y(x_y_tup, r):
 	"""
 
@@ -445,7 +469,9 @@ def test_x_y(x_y_tup, r):
 	global claimed_positives, actual_positives, true_positives, correct, false_positives
 	x = x_y_tup[1][0]
 	y = x_y_tup[1][1]
-	if ((np.dot(x, r) > 0) and (y == 1)):
+	prob = 1 / ( 1+ math.exp(np.sum((np.dot(x, r)))))
+	CUTOFF = .5
+	if (prob > CUTOFF) and (y == 1):
 		# true positive
 		# claimed_positives += 1
 		# actual_positives += 1
@@ -453,12 +479,12 @@ def test_x_y(x_y_tup, r):
 		# print('success - true positive')
 		# correct = correct + 1
 		return (1,(1, x_y_tup[0]))
-	elif ((np.dot(x, r) < 0) and (y == 0)):
+	elif prob < CUTOFF and (y == 0):
 		# true negative
 		# print('success - true negative')
 		# correct = correct + 1
 		return (2,(1,x_y_tup[0]))
-	elif ((np.dot(x, r) > 0) and (y == 0)):
+	elif prob > CUTOFF and (y == 0):
 		# claimed_positives += 1
 		# # false positive
 		# print('failure - false positive')
@@ -488,12 +514,13 @@ def predict(x, y, r):
 	x_y = x.join(y)
 	# x_y.foreach(lambda z: test_x_y(z, r))
 	results = x_y.map(lambda z: test_x_y(z, r))
-	# results = x_y.map(lambda z: test_x_y(z, new_r_nn))
+		# results = x_y.map(lambda z: test_x_y(z, new_r_nn))
+	probs = x_y.map(lambda z: get_prob(z, r))
+
 	results_agg = results.map(lambda z: (z[0], z[1][0]))
 	results_agg = results_agg.reduceByKey(opr.add)
 	doc_and_cat = results.map(lambda z: (z[0], z[1][1]))
 	false_pos_rdd = doc_and_cat.filter(lambda z: z[0] == 3).take(10)
-
 	res1 = results_agg.lookup(1)
 	res2 = results_agg.lookup(2)
 	res3 = results_agg.lookup(3)
@@ -502,7 +529,6 @@ def predict(x, y, r):
 	claimed_positives = res1 + res3
 	actual_positives  = res1 + res4
 	true_positives = res1
-
 	recall = true_positives * 1. / actual_positives
 	precision = true_positives * 1. / claimed_positives
 	print("True positives: %d. Actual positives: %d .claimed positives: %d"
@@ -544,7 +570,6 @@ x = small_x
 # x, keyAndText = cons_feature_vectors(training) # feature vectors
 small_y = cons_label_rdd(smallKeyAndText) # takes the form 1 for yes, 0 for no
 y = small_y
-new_r_nn = task2(small_x,small_y,initial_r)
 
 ##############
 
@@ -562,7 +587,10 @@ new_r_nn = task2(small_x,small_y,initial_r)
 ##############
 x = small_x
 y = small_y
-x_norm= normalize_data(x)
+x_mean = get_mean_vector(x)
+x_sd = get_sd_vector(x, x_mean)
+x_norm= normalize_data(x, x_mean, x_sd)
+
 
 # NOTE: make sure to assign dictionary and lenDictionary to the version that you want
 
@@ -577,12 +605,12 @@ k = x.take(1)[0][1].size
 initial_r = np.asmatrix(np.full((k, 1), .1)) # (k,1)
 new_r = task2(x_norm,y,initial_r)
 new_r_nn = task2(x,y,initial_r)
+new_r_nn2 = task2(small_x,small_y,initial_r)
 
 
 most_imp = get_k_most_imp_words_ordered(50, new_r)
 
 # TODO: WE HAVE THE FOLLOWING TO TEST OUR CODE:
-x_norm = normalize_data(x)
 old_llh = llh(x_norm,y,initial_r)
 grad = calc_gradient(x_norm,y,initial_r)
 
@@ -609,6 +637,8 @@ test_x, testKeyAndText = cons_test_feature_rdd(small_test)
 x = test_x
 actual_y = cons_label_rdd(testKeyAndText)
 y = actual_y
-norm_test_x = normalize_data(test_x)
+norm_test_x = normalize_data(test_x,x_mean, x_sd)
 
-F1, false_pos_text = task3(small_test, new_r)
+F1, false_pos_text = task3(small_test, new_r, x_mean, x_sd)
+
+np.dot(x_norm.lookup("AU35")[0][1], new_r_nn)
