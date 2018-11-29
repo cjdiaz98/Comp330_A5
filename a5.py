@@ -103,6 +103,7 @@ def cons_test_feature_rdd(filename):
 	"""
 	global IDF
 	keyAndText, numWordsInDoc = get_doc_rdd(filename)
+	keyAndText.cache()
 	docAndFrequencies = cons_frequency_rdd(keyAndText)
 	tf_idf_rdd = cons_TF_IDF(docAndFrequencies, numWordsInDoc, IDF)
 	# tf_idf_np_rdd = tf_idf_rdd.map(lambda x: x[1])
@@ -275,7 +276,7 @@ def get_k_largest_coeff_indices(k, r):
 	# https://stackoverflow.com/questions/44409084/how-to-zip-two-1d-numpy-array-to-2d-numpy-array
 	abs_r = np.abs(r[:-1])
 	r_list_abs = np.squeeze(np.asarray(abs_r))
-	r_list = np.squeeze(np.asarray(abs_r))
+	r_list = np.squeeze(np.asarray(r))
 	zipped_list = zip(r_list_abs, r_list)
 	zipped_list = zip(zipped_list, range(len(r_list)))
 	zipped_list = sorted(zipped_list, reverse = True)[:k]
@@ -372,7 +373,8 @@ def task2(x,y,r):
 	Note: k = 20000 in this case
 	:return: 
 	"""
-	THRESH = 10e-4
+	THRESH = 10e-3
+	# THRESH = 10e-4
 	BOLD_DRIVER = 1.
 	INCREASE = 1.05
 	DECREASE = .5
@@ -383,7 +385,9 @@ def task2(x,y,r):
 	# Compute the LLH of your model
 	old_llh = llh(x,y,r)
 	new_llh = old_llh + 1
+	num_iter = 0
 	while abs(old_llh - new_llh) > THRESH:
+		num_iter += 1
 		print("LLH %f" % old_llh)
 		print("BOLD DRIVER %f" % BOLD_DRIVER)
 		print(r)
@@ -400,6 +404,7 @@ def task2(x,y,r):
 		# https: // python - forum.io / Thread - OverflowError - math - range - error
 		x_r_too_large = x_r.filter(lambda z: z[1] > 700)
 		if x_r_too_large.count() > 0:
+			print("num iter %d" % num_iter)
 			print("hit math range error")
 			return r
 		## above is to debug
@@ -409,6 +414,7 @@ def task2(x,y,r):
 			# we want to de-incentivize decreases
 		else:
 			BOLD_DRIVER *= INCREASE
+	print("num iter %d" % num_iter)
 	return r
 
 # TODO: below contains one iteration of Task2
@@ -459,6 +465,8 @@ def get_prob(x_y_tup, r):
 	CUTOFF = .5
 	return prob
 
+CUTOFF = 1e-25
+
 def test_x_y(x_y_tup, r):
 	"""
 
@@ -466,12 +474,11 @@ def test_x_y(x_y_tup, r):
 	:param r: 
 	:return: 
 	"""
-	global claimed_positives, actual_positives, true_positives, correct, false_positives
+	global CUTOFF, claimed_positives, actual_positives, true_positives, correct, false_positives
 	x = x_y_tup[1][0]
 	y = x_y_tup[1][1]
 	prob = 1 / ( 1+ math.exp(np.sum((np.dot(x, r)))))
-	CUTOFF = .5
-	if (prob > CUTOFF) and (y == 1):
+	if (prob < CUTOFF) and (y == 1):
 		# true positive
 		# claimed_positives += 1
 		# actual_positives += 1
@@ -479,12 +486,12 @@ def test_x_y(x_y_tup, r):
 		# print('success - true positive')
 		# correct = correct + 1
 		return (1,(1, x_y_tup[0]))
-	elif prob < CUTOFF and (y == 0):
+	elif prob > CUTOFF and (y == 0):
 		# true negative
 		# print('success - true negative')
 		# correct = correct + 1
 		return (2,(1,x_y_tup[0]))
-	elif prob > CUTOFF and (y == 0):
+	elif prob < CUTOFF and (y == 0):
 		# claimed_positives += 1
 		# # false positive
 		# print('failure - false positive')
@@ -515,27 +522,26 @@ def predict(x, y, r):
 	# x_y.foreach(lambda z: test_x_y(z, r))
 	results = x_y.map(lambda z: test_x_y(z, r))
 		# results = x_y.map(lambda z: test_x_y(z, new_r_nn))
-	probs = x_y.map(lambda z: get_prob(z, r))
-
 	results_agg = results.map(lambda z: (z[0], z[1][0]))
 	results_agg = results_agg.reduceByKey(opr.add)
+	results_agg.take(4)
 	doc_and_cat = results.map(lambda z: (z[0], z[1][1]))
 	false_pos_rdd = doc_and_cat.filter(lambda z: z[0] == 3).take(10)
-	res1 = results_agg.lookup(1)
-	res2 = results_agg.lookup(2)
-	res3 = results_agg.lookup(3)
-	res4 = results_agg.lookup(4)
+	res1 = sum(results_agg.lookup(1))
+	res2 = sum(results_agg.lookup(2))
+	res3 = sum(results_agg.lookup(3))
+	res4 = sum(results_agg.lookup(4))
 	correct = res1 + res2
 	claimed_positives = res1 + res3
 	actual_positives  = res1 + res4
 	true_positives = res1
 	recall = true_positives * 1. / actual_positives
 	precision = true_positives * 1. / claimed_positives
+	f1_score = (2 * precision * recall) / (precision + recall)
 	print("True positives: %d. Actual positives: %d .claimed positives: %d"
 		  % (true_positives, actual_positives, claimed_positives))
 	# print(true_positives * 1. / claimed_positives)
 	print("Precision: %f . Recall: %f" % (precision, recall))
-	f1_score = (2 * precision * recall) / (precision + recall)
 	print('%d out of %d correct.' % (correct, len(y)))
 	print("f1 score: %f" % f1_score)
 	# TODO: possibly return tuple containing F1 score,
@@ -553,23 +559,7 @@ small_training = "s3://chrisjermainebucket/comp330_A5/SmallTrainingDataOneLinePe
 
 ###### TODO: COMPUTE SMALL  ########
 # keyAndText = get_key_and_text(training)
-smallKeyAndText = get_key_and_text(small_training)
-# keyAndText.cache()
-small_num_docs = smallKeyAndText.count()
-keyAndText = smallKeyAndText
-num_docs = small_num_docs
 
-small_dictionary = lab5()
-# dictionary.cache()
-smallLenDictionary = small_dictionary.count()
-dictionary = small_dictionary
-lenDictionary = smallLenDictionary
-
-small_x, smallKeyAndText = cons_training_feature_rdd(small_training) # feature vectors
-x = small_x
-# x, keyAndText = cons_feature_vectors(training) # feature vectors
-small_y = cons_label_rdd(smallKeyAndText) # takes the form 1 for yes, 0 for no
-y = small_y
 
 ##############
 
@@ -633,12 +623,47 @@ list1 = ['applicant', 'pty', 'mr', 'ltd', 'evidence', 'proceeding', 'relevant', 
 # BELOW IS FOR TESTING YOUR TRAINED MODEL BY HAND:
 # test_x,testKeyAndText = cons_test_feature_rdd(small_test)
 # test_y = cons_label_rdd(testKeyAndText)
-test_x, testKeyAndText = cons_test_feature_rdd(small_test)
+keyAndText = get_key_and_text(small_test)
+# keyAndText.cache()
+num_docs = keyAndText.count()
+dictionary = lab5()
+dictionary.cache()
+lenDictionary = dictionary.count()
+
+test_x, testKeyAndText = cons_training_feature_rdd(small_test)
 x = test_x
 actual_y = cons_label_rdd(testKeyAndText)
 y = actual_y
+x_mean = get_mean_vector(x)
+x_sd = get_sd_vector(x, x_mean)
 norm_test_x = normalize_data(test_x,x_mean, x_sd)
+
+k = x.take(1)[0][1].size
+# initial_r = np.full(k, .1)  # (k,1)
+# initial_r = np.asmatrix(np.full((k, 1), .1)) # (k,1)
+initial_r = np.asmatrix(np.full((k, 1), .1)) # (k,1)
+
+task1()
+new_r_small_test = task2(norm_test_x,y,initial_r)
 
 F1, false_pos_text = task3(small_test, new_r, x_mean, x_sd)
 
 np.dot(x_norm.lookup("AU35")[0][1], new_r_nn)
+
+##############################
+
+train_test_x, smallKeyAndText =  cons_test_feature_rdd(small_training)
+norm_tt_x = normalize_data(train_test_x,x_mean, x_sd)
+small_y = cons_label_rdd(smallKeyAndText) # takes the form 1 for yes, 0 for no
+
+################################
+
+# BELOW: USE FOR GETTING X_Y PAIRS THAT CORRESPOND TO AU/NON-AU
+regex = re.compile('AU(.)*')
+probs = x_y.map(lambda z: get_prob(z, r))
+
+au_x_y = x_y.filter(lambda z: bool(regex.match(z[0])))
+probs_au = au_x_y.map(lambda z: get_prob(z, r))
+non_au_x_y = x_y.filter(lambda z: not bool(regex.match(z[0])))
+probs_non = non_au_x_y.map(lambda z: get_prob(z, r))
+false_pos = probs_non.filter(lambda z: z < CUTOFF)
